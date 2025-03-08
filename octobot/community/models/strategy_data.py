@@ -18,7 +18,7 @@ import octobot.constants as constants
 import octobot.community.identifiers_provider as identifiers_provider
 import octobot_commons.dataclasses as commons_dataclasses
 import octobot_commons.enums as commons_enums
-
+import octobot_commons.profiles as profiles
 
 CATEGORY_NAME_TRANSLATIONS_BY_SLUG = {
     "coingecko-index": {"en": "Crypto Basket"}
@@ -33,6 +33,9 @@ AUTO_UPDATED_CATEGORIES = ["coingecko-index"]
 DEFAULT_LOGO_NAME = "default_strategy.png"
 EXTENSION_CATEGORIES = ["coingecko-index"]
 
+CUSTOM_STRATEGY_PREFIX = "[Custom]_"
+CUSTOM_CATEGORY_SLUG_PREFIX = "creator-"
+
 
 @dataclasses.dataclass
 class CategoryData(commons_dataclasses.FlexibleDataclass):
@@ -46,9 +49,9 @@ class CategoryData(commons_dataclasses.FlexibleDataclass):
             external_links = self.metadata.get("external_link")
             if external_links:
                 if blog_slug := external_links.get("blog"):
-                    return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_LANDING_URL}/en/blog/{blog_slug}"
+                    return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_URL}/en/blog/{blog_slug}"
                 if features_slug := external_links.get("features"):
-                    return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_LANDING_URL}/features/{features_slug}"
+                    return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_URL}/features/{features_slug}"
         return ""
 
     def get_default_logo_url(self) -> str:
@@ -107,15 +110,15 @@ class StrategyData(commons_dataclasses.FlexibleDataclass):
 
     def get_url(self) -> str:
         if path := FORCED_URL_PATH_BY_SLUG.get(self.category.slug):
-            return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_LANDING_URL}/{path}"
+            return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_URL}/{path}"
         return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_URL}/strategies/{self.slug}"
 
     def get_product_url(self) -> str:
         return f"{identifiers_provider.IdentifiersProvider.COMMUNITY_URL}/strategies/{self.slug}"
 
     def get_risk(self) -> commons_enums.ProfileRisk:
-        risk = self.attributes['risk'].upper()
         try:
+            risk = self.attributes['risk'].upper()
             # use [] to access by name
             # https://docs.python.org/3/howto/enum.html#programmatic-access-to-enumeration-members-and-their-attributes
             return commons_enums.ProfileRisk[risk]
@@ -132,3 +135,20 @@ class StrategyData(commons_dataclasses.FlexibleDataclass):
 
     def is_extension_only(self) -> bool:
         return self.category.slug in EXTENSION_CATEGORIES
+
+
+def is_custom_category(category: dict) -> bool:
+    if slug := category.get('slug'):
+        return slug.startswith(CUSTOM_CATEGORY_SLUG_PREFIX)
+    return False
+
+
+def get_custom_strategy_name(base_name) -> str:
+    return f"{CUSTOM_STRATEGY_PREFIX}{base_name}"
+
+
+def is_custom_strategy_profile(profile: profiles.ProfileData) -> str:
+    return (
+        profile.profile_details.name
+        and profile.profile_details.name.startswith(CUSTOM_STRATEGY_PREFIX)
+    )
