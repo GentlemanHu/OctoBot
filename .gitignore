@@ -127,6 +127,7 @@ temp_config.json
 *.ods
 *.c
 *.h
+.DS_Store
 
 # OctoBot logs
 logs
@@ -140,8 +141,9 @@ letsencrypt/
 # dev env
 .env
 
-# pants
-.pants.d/
+# Pants build system
+/.pants.d/
+/dist/
 
 # bin
 nltk_data/
@@ -149,3 +151,9 @@ installer/
 
 # resources watcher
 *.dump
+
+# node
+*.db*
+
+# ai
+analysis/

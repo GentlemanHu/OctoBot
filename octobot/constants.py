@@ -126,6 +126,8 @@ USER_AUTH_KEY = os.getenv("USER_AUTH_KEY", None)
 COMMUNITY_BOT_ID = os.getenv("COMMUNITY_BOT_ID", "")
 IS_DEMO = os_util.parse_boolean_environment_var("IS_DEMO", "False")
 IS_CLOUD_ENV = os_util.parse_boolean_environment_var("IS_CLOUD_ENV", "false")
+DEPLOYMENT_TIME = os.getenv("DEPLOYMENT_TIME") # format: ISO 8601, ex: 2026-02-21T08:08:42.325Z
+DEFAULT_NEW_DEPLOYMENT_TIMEOUT = 2 * octobot_commons.constants.MINUTE_TO_SECONDS
 USE_FETCHED_BOT_CONFIG = os_util.parse_boolean_environment_var("USE_FETCHED_BOT_CONFIG", "false")
 SHOULD_CHECK_TENTACLES = os_util.parse_boolean_environment_var("SHOULD_CHECK_TENTACLES", "true")
 CAN_INSTALL_TENTACLES = os_util.parse_boolean_environment_var("CAN_INSTALL_TENTACLES", str(not IS_CLOUD_ENV))
@@ -223,7 +225,7 @@ EXIT_BEFORE_TENTACLES_AUTO_REINSTALL = os_util.parse_boolean_environment_var("EX
 # Store the path of the octobot directory from this file since it can change depending on the installation path
 # (local sources, python site-packages, ...)
 OCTOBOT_FOLDER = pathlib.Path(__file__).parent.absolute()
-CONFIG_FOLDER = f"{OCTOBOT_FOLDER}/config"
+CONFIG_FOLDER = f"{OCTOBOT_FOLDER}/{octobot_commons.constants.CONFIG_FOLDER}"
 SCHEMA = "schema"
 CONFIG_FILE_SCHEMA = f"{CONFIG_FOLDER}/config_{SCHEMA}.json"
 PROFILE_FILE_SCHEMA = f"{CONFIG_FOLDER}/profile_{SCHEMA}.json"

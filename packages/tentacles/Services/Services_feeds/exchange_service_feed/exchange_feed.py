@@ -79,8 +79,8 @@ class ExchangeServiceFeed(service_feeds.AbstractServiceFeed):
 
     DEFAULT_REFRESH_TIME = 10
 
-    def __init__(self, config, main_async_loop, bot_id: str):
-        super().__init__(config, main_async_loop, bot_id)
+    def __init__(self, config, main_async_loop, bot_id: str, backtesting=None, importer=None):
+        super().__init__(config, main_async_loop, bot_id, backtesting=backtesting, importer=importer)
         self.exchange_profiles: typing.Dict[str, ExchangeProfile] = {}
 
     def _initialize(self):
@@ -121,9 +121,14 @@ class ExchangeServiceFeed(service_feeds.AbstractServiceFeed):
         if exchange_has_positions:
             current_profile.positions = await exchange_manager.exchange.get_user_positions(current_profile.profile_id)
             updated = True
-        else:
-            # TODO later: Update portfolio to support SPOT copy trading
-            pass
+        try:
+            balance = await exchange_manager.exchange.get_user_balance(current_profile.profile_id)
+            if balance is not None:
+                portfolio = personal_data.create_portfolio_from_exchange_manager(exchange_manager)
+                portfolio.update_portfolio_from_balance(balance)
+                current_profile.portfolio = portfolio
+        except NotImplementedError:
+            self.logger.warning(f"get_user_balance is not implemented")
 
         # TODO Later: should we also fetch orders and trades ?
         return updated

@@ -5,7 +5,7 @@
 [![YouTube](https://img.shields.io/youtube/channel/views/UC2YAaBeWY8y_Olqs79b_X8A?label=youtube&style=social)](https://www.youtube.com/@octobot1134)
 
 <p align="middle">
-<img src="public/assets/images/octobot_node_256.png" height="256" alt="OctoBot Node logo">
+<img src="../tentacles/Services/Interfaces/node_web_interface/public/assets/images/octobot_node_256.png" height="256" alt="OctoBot Node logo">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@ octobot_node
 - `--port PORT`: Port to bind the server to (default: 8000)
 - `--master`: Enable master node mode (schedules tasks)
 - `--consumers N`: Number of consumer worker threads (0 disables consumers, default: 0). Can be used with --master
-- `--environment {local,production}`: Environment mode (default: from ENVIRONMENT environment variable). Auto-reload is enabled automatically when environment is local
+- `--environment {local,production}`: Environment mode (default: from NODE_ENVIRONMENT environment variable). Auto-reload is enabled automatically when environment is local
 - `--admin-username EMAIL`: Admin username in email format (default: from ADMIN_USERNAME environment variable)
 - `--admin-password PASSWORD`: Admin password (default: from ADMIN_PASSWORD environment variable)
 
@@ -122,16 +122,16 @@ After building, start the FastAPI server. The static Web UI will be available at
 If you plan to actively develop or modify the Web UI, use the dynamic development mode. This provides hot-reload and the latest changes instantly.
 To run the Web UI in development mode, use:
 ```bash
-npm run ui:dev
+npm --prefix ../tentacles/Services/Interfaces/node_web_interface run ui:dev
 ```
 This will start the development server, typically available at [http://localhost:3000](http://localhost:3000). You can access the UI separately while developing.
 For API integration during development, make sure your FastAPI backend server is running simultaneously. The development server will proxy API requests to the backend as configured.
 
 ### OpenAPI
 
-Whenever you update or add routes in `octobot_node/app/api`, you need to regenerate the [OpenAPI specification](https://github.com/OAI/OpenAPI-Specification) and the UI OpenAPI client. This can be done easily with the provided script:
+Whenever you update or add routes in `tentacles/Services/Interfaces/node_api/api`, you need to regenerate the [OpenAPI specification](https://github.com/OAI/OpenAPI-Specification) and the UI OpenAPI client. This can be done easily with the provided script:
 ```bash
-bash ./generate-client.sh
+bash ../tentacles/Services/Interfaces/node_web_interface/generate-client.sh
 ```
 
 ### API Server
@@ -149,7 +149,7 @@ python start.py --master
 Or directly with uvicorn:
 
 ```bash
-uvicorn octobot_node.app.main:app --host 0.0.0.0 --port 8000
+uvicorn tentacles.Services.Interfaces.node_api_interface.node_api_interface:NodeApiInterface.create_app --factory --host 0.0.0.0 --port 8000
 ```
 
 - By default, the server runs on [http://localhost:8000](http://localhost:8000).
@@ -162,10 +162,10 @@ uvicorn octobot_node.app.main:app --host 0.0.0.0 --port 8000
 ##### Environment Variables
 
 Some key `.env` variables:
-- `SCHEDULER_REDIS_URL` (if using Redis as backend)
+- `SCHEDULER_POSTGRES_URL` (if using Postgres as backend)
 - `SCHEDULER_SQLITE_FILE` (if using SQLite, default: "tasks.db")
 - `SCHEDULER_WORKERS` (number of consumer workers, default: 0, can be overridden with --consumers)
-- `ENVIRONMENT` (environment mode: "local" or "production", default: "production")
+- `NODE_ENVIRONMENT` (environment mode: "local" or "production", default: "production")
 - `ADMIN_USERNAME` (admin username in email format, can be overridden with --admin-username)
 - `ADMIN_PASSWORD` (admin password, can be overridden with --admin-password)
 
@@ -175,10 +175,10 @@ See `.env.sample` for all options, and adjust as needed.
 
 #### Scheduler
 
-The task scheduler is automatically started together with the FastAPI server through import of the `octobot_node/scheduler` module. The scheduler uses [Huey](https://github.com/coleifer/huey) for task queue management.
+The task scheduler is automatically started together with the FastAPI server through import of the `octobot_node/scheduler` module. The scheduler uses [DBOS](https://docs.dbos.dev/) for durable workflow and task queue management.
 
 - **No manual launch needed** — scheduler and consumers are managed automatically on startup.
-- Configuration for the scheduler backend (Redis or SQLite) is picked up from environment variables.
+- Configuration for the scheduler backend (Postgres or SQLite) is picked up from environment variables.
 - Consumer workers are started automatically if `SCHEDULER_WORKERS > 0` (or `--consumers N` is used).
 - Master mode is enabled via the `--master` CLI flag and allows the node to schedule tasks.
 - A node can be both a master (schedules tasks) and run consumer workers simultaneously.

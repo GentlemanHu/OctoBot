@@ -26,6 +26,7 @@ async def get_file_description(file_name, data_path=constants.BACKTESTING_FILE_P
         return {
             enums.DataFormatKeys.SYMBOLS.value: description[enums.DataFormatKeys.SYMBOLS.value],
             enums.DataFormatKeys.EXCHANGE.value: description[enums.DataFormatKeys.EXCHANGE.value],
+            enums.DataFormatKeys.SERVICES.value: description.get(enums.DataFormatKeys.SERVICES.value, []),
             enums.DataFormatKeys.DATE.value: data.get_date(int(description[enums.DataFormatKeys.TIMESTAMP.value])),
             enums.DataFormatKeys.TIMESTAMP.value: int(description[enums.DataFormatKeys.TIMESTAMP.value]),
             enums.DataFormatKeys.START_TIMESTAMP.value: int(description[enums.DataFormatKeys.START_TIMESTAMP.value]),
@@ -37,7 +38,10 @@ async def get_file_description(file_name, data_path=constants.BACKTESTING_FILE_P
             enums.DataFormatKeys.TIME_FRAMES.value: [tf.value
                                                      for tf in description[enums.DataFormatKeys.TIME_FRAMES.value]],
             enums.DataFormatKeys.CANDLES_LENGTH.value: description[enums.DataFormatKeys.CANDLES_LENGTH.value],
-            enums.DataFormatKeys.TYPE.value: "OctoBot data file"
+            enums.DataFormatKeys.TYPE.value: "OctoBot data file",
+            enums.DataFormatKeys.DATA_TYPE.value: description.get(
+                enums.DataFormatKeys.DATA_TYPE.value, enums.DataType.EXCHANGE.value
+            ),
         }
     else:
         return description

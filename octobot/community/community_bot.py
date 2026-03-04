@@ -16,6 +16,8 @@
 #  License along with OctoBot. If not, see <https://www.gnu.org/licenses/>.
 import typing
 import contextlib
+import time
+import datetime
 
 import octobot_commons.cache_util as cache_util
 import octobot.community.errors as errors
@@ -31,6 +33,20 @@ if typing.TYPE_CHECKING:
 
 
 _STOPPED_STRATEGY_EXECUTION_LOG_MAX_PERIOD = 60
+
+# deployment error statuses that should be cleared by the bot during startup
+_CLEARABLE_DEPLOYMENT_ERROR_STATUSES: list[supabase_enums.BotDeploymentErrorsStatuses] = [
+    supabase_enums.BotDeploymentErrorsStatuses.MISSING_API_KEY_TRADING_RIGHTS,
+    supabase_enums.BotDeploymentErrorsStatuses.INVALID_EXCHANGE_CREDENTIALS,
+    supabase_enums.BotDeploymentErrorsStatuses.MISSING_MINIMAL_FUNDS,
+    supabase_enums.BotDeploymentErrorsStatuses.INTERNAL_SERVER_ERROR,
+]
+_NEW_BOT_DEPLOYMENT_CLEARABLE_ERROR_STATUSES: list[supabase_enums.BotDeploymentErrorsStatuses] = (
+    _CLEARABLE_DEPLOYMENT_ERROR_STATUSES + [
+        # also clear stop condition triggered error status if the bot has just been deployed
+        supabase_enums.BotDeploymentErrorsStatuses.STOP_CONDITION_TRIGGERED,
+    ]
+)
 
 
 def suppressed_local_env_bot_error(f):
@@ -68,26 +84,29 @@ class CommunityBot:
     """
     Bot utility methods to update the community bot representation in database
     """
-    # deployment error statuses that should be cleared by the bot during startup
-    CLEARABLE_DEPLOYMENT_ERROR_STATUSES: list[supabase_enums.BotDeploymentErrorsStatuses] = [
-        supabase_enums.BotDeploymentErrorsStatuses.MISSING_API_KEY_TRADING_RIGHTS,
-        supabase_enums.BotDeploymentErrorsStatuses.INVALID_EXCHANGE_CREDENTIALS,
-        supabase_enums.BotDeploymentErrorsStatuses.MISSING_MINIMAL_FUNDS,
-        supabase_enums.BotDeploymentErrorsStatuses.INTERNAL_SERVER_ERROR,
-    ]
 
     def __init__(self, authenticator: "community_authentication.CommunityAuthentication"):
         self.authenticator: "community_authentication.CommunityAuthentication" = authenticator
+        self._has_just_been_deployed: bool = False
 
-    async def should_trade_according_to_products_subscription_and_deployment_error_status(self) -> bool:
+    async def should_trade_according_to_products_subscription_and_deployment_error_status(
+        self,
+        new_deployment_timeout: float = octobot.constants.DEFAULT_NEW_DEPLOYMENT_TIMEOUT
+    ) -> bool:
         products_subscription = await self._fetch_products_subscription()
         if self._is_product_subscription_desired_status_active(products_subscription):
+            # bot should be running, now check error status if not just deployed
             # don't fetch deployment error status if bot should not trade
-            if not self._is_deployment_error_status_in(
+            if self.had_just_been_deployed_during_startup(new_deployment_timeout) or not self._is_deployment_error_status_in(
                 [supabase_enums.BotDeploymentErrorsStatuses.STOP_CONDITION_TRIGGERED]
             ):
-                # bot should be running and didn't trigger stop condition yet
+                # bot has just been deployed or didn't trigger stop condition yet
                 return True
+        self.get_logger().warning(
+            f"Bot {self.authenticator.user_account.bot_id} should not trade: "
+            f"products_subscription_desired_status={products_subscription[supabase_enums.ProductsSubscriptionsKeys.DESIRED_STATUS.value]}, "
+            f"deployment_error_status={self.authenticator.user_account.get_selected_bot_deployment_error_status()}"
+        )
         return False
     
     async def on_started_bot(self):
@@ -165,8 +184,10 @@ class CommunityBot:
 
     def _is_product_subscription_desired_status_active(self, products_subscription: dict) -> bool:
         return (
-            products_subscription[supabase_enums.ProductsSubscriptionsKeys.DESIRED_STATUS.value] 
-            == supabase_enums.ProductSubscriptionDesiredStatus.ACTIVE.value
+            products_subscription[supabase_enums.ProductsSubscriptionsKeys.DESIRED_STATUS.value] in (
+                supabase_enums.ProductSubscriptionDesiredStatus.ACTIVE.value,
+                supabase_enums.ProductSubscriptionDesiredStatus.RESTARTING.value,
+            )
         )
 
     def _is_deployment_error_status_in(
@@ -203,7 +224,11 @@ class CommunityBot:
     @suppressed_local_env_bot_error
     async def _ensure_clear_deployment_error_status(self):
         with caught_global_exceptions("ensure_clear_deployment_error_status"):
-            if self._is_deployment_error_status_in(self.CLEARABLE_DEPLOYMENT_ERROR_STATUSES):
+            clearable_error_statuses = (
+                _NEW_BOT_DEPLOYMENT_CLEARABLE_ERROR_STATUSES if self.had_just_been_deployed_during_startup()
+                else _CLEARABLE_DEPLOYMENT_ERROR_STATUSES
+            )
+            if self._is_deployment_error_status_in(clearable_error_statuses):
                 await self._update_deployment_error_status(supabase_enums.BotDeploymentErrorsStatuses.NO_ERROR)
 
     async def _fetch_products_subscription(self) -> dict:
@@ -226,6 +251,26 @@ class CommunityBot:
         self.get_logger().info(
             f"Updated product_subscription.desired_status to {desired_status.value} [{products_subscription_id=}]"
         )
+
+    def had_just_been_deployed_during_startup(
+        self, new_deployment_timeout: float = octobot.constants.DEFAULT_NEW_DEPLOYMENT_TIMEOUT
+    ) -> bool:
+        if self._has_just_been_deployed:
+            return True
+        if deployment_time := CommunityBot.get_deployment_time():
+            # bot has been deployed within the last new_deployment_timeout seconds
+            # store the result to avoid side effects if the method is called multiple times
+            self._has_just_been_deployed = time.time() < deployment_time + new_deployment_timeout
+        return self._has_just_been_deployed
+
+    @staticmethod
+    def get_deployment_time() -> typing.Optional[float]:
+        if raw_deployment_time := octobot.constants.DEPLOYMENT_TIME:
+            try:
+                return datetime.datetime.fromisoformat(raw_deployment_time).timestamp()
+            except ValueError:
+                CommunityBot.get_logger().error(f"Invalid deployment time: {raw_deployment_time}")
+        return None
 
     @classmethod
     def get_logger(cls):

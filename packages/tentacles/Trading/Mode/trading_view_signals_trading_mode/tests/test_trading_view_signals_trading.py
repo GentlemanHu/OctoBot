@@ -122,7 +122,7 @@ BLOCKCHAIN_WALLET_ASSET = "ETH"
 @pytest.fixture
 def blockchain_wallet_details():
     blockchain_descriptor = blockchain_wallets.BlockchainDescriptor(
-        wallet_type=blockchain_wallets.BlockchainWalletSimulator.__name__,
+        blockchain=blockchain_wallets.BlockchainWalletSimulator.BLOCKCHAIN,
         network=trading_constants.SIMULATED_BLOCKCHAIN_NETWORK,
         native_coin_symbol="ETH"
     )
@@ -149,6 +149,8 @@ def blockchain_wallet_details():
 async def test_parse_signal_data():
     errors = []
     exchange_name = "binance"
+    exchange_type = trading_enums.ExchangeTypes.SPOT
+    reference_market = "USDT"
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
         """
         
@@ -161,6 +163,8 @@ async def test_parse_signal_data():
         PLOp=true
         """,
         exchange_name,
+        exchange_type,
+        reference_market,
         errors
     ) == {
         "KEY": "value",
@@ -173,6 +177,8 @@ async def test_parse_signal_data():
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
         "KEY=value\nEXCHANGE=1\n\n\n\nPLOp=false\n",
         exchange_name,
+        exchange_type,
+        reference_market,
         errors
     ) == {
         "KEY": "value",
@@ -185,6 +191,8 @@ async def test_parse_signal_data():
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
         "KEY=value\\nEXCHANGE=1\\nPLOp=ABC",
         exchange_name,
+        exchange_type,
+        reference_market,
         errors
     ) == {
         "KEY": "value",
@@ -197,6 +205,8 @@ async def test_parse_signal_data():
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
         "KEY=value\\nEXCHANGE\\nPLOp=ABC",
         exchange_name,
+        exchange_type,
+        reference_market,
         errors
     ) == {
         "KEY": "value",
@@ -211,6 +221,8 @@ async def test_parse_signal_data():
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
         "KEY=value;EXCHANGE;;;;;PLOp=ABC;TAKE_PROFIT_PRICE=1;;TAKE_PROFIT_PRICE_2=3",
         exchange_name,
+        exchange_type,
+        reference_market,
         errors
     ) == {
         "KEY": "value",
@@ -227,6 +239,8 @@ async def test_parse_signal_data():
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
         ";KEY=value;EXCHANGE\nPLOp=ABC\\nGG=HIHI;LEVERAGE=3",
         exchange_name,
+        exchange_type,
+        reference_market,
         errors
     ) == {
         "KEY": "value",
@@ -244,52 +258,80 @@ async def test_parse_signal_data():
 async def test_parse_signal_data_with_generic_usd_stablecoin_symbol():
     errors = []
     exchange_name = "binance"
+    exchange_type = trading_enums.ExchangeTypes.SPOT
+    reference_market = "USDT"
+
+    # Dict input: returns deep copy without modification (no _adapt_symbol)
+    input_dict = {"SYMBOL": "USD*", "EXCHANGE": "binance"}
+    result = Mode.TradingViewSignalsTradingMode.parse_signal_data(
+        input_dict, exchange_name, exchange_type, reference_market, errors
+    )
+    assert result == {"SYMBOL": "USD*", "EXCHANGE": "binance"}
+    assert result is not input_dict
+
+    # Generic USD stablecoin: no exchange, leave as is
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "SYMBOL=USD*", None, errors
+        "SYMBOL=USD*", None, exchange_type, reference_market, errors
     ) == {
-        "SYMBOL": "USD*", # no exchange, leave as is
+        "SYMBOL": "USD*",
     }
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "NO_SYMBOL=USD*", "", errors
+        "NO_SYMBOL=USD*", "", exchange_type, reference_market, errors
     ) == {
-        "NO_SYMBOL": "USD*", # no exchange, leave as is
+        "NO_SYMBOL": "USD*",
+    }
+
+    # Generic USD stablecoin: SPOT with exchange - use exchange default reference market
+    assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
+        "SYMBOL=USD*", exchange_name, exchange_type, reference_market, errors
+    ) == {
+        "SYMBOL": "USDC",
     }
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "SYMBOL=USD*", exchange_name, errors
+        "NO_SYMBOL=USD*", exchange_name, exchange_type, reference_market, errors
     ) == {
-        "SYMBOL": "USDC", # default reference market for binance, as defined in 
-        # tentacles.Meta.Keywords.scripting_library.configuration.exchanges_configuration
-        # (case insensitive)
+        "NO_SYMBOL": "USD*",
     }
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "NO_SYMBOL=USD*", exchange_name, errors
+        "SYMBOL=USD*;EXCHANGE=BiNance", exchange_name, exchange_type, reference_market, errors
     ) == {
-        "NO_SYMBOL": "USD*", # no symbol, leave as is
-    }
-    assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "SYMBOL=USD*;EXCHANGE=BiNance", exchange_name, errors
-    ) == {
-        "SYMBOL": "USDC", # default reference market for binance, as defined in 
-        # tentacles.Meta.Keywords.scripting_library.configuration.exchanges_configuration
-        # (case insensitive)
+        "SYMBOL": "USDC",
         "EXCHANGE": "BiNance",
     }
+
+    # Generic USD stablecoin: FUTURE with reference_market - use reference_market
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "SYMBOL=USD*", "mexc", errors
+        "SYMBOL=USD*", exchange_name, trading_enums.ExchangeTypes.FUTURE, reference_market, errors
     ) == {
-        "SYMBOL": commons_constants.DEFAULT_REFERENCE_MARKET, # no default reference market for mexc, use default
+        "SYMBOL": "USDT",
+    }
+
+    # Generic USD stablecoin: unknown exchange - use DEFAULT_REFERENCE_MARKET
+    assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
+        "SYMBOL=USD*", "mexc", exchange_type, reference_market, errors
+    ) == {
+        "SYMBOL": commons_constants.DEFAULT_REFERENCE_MARKET,
     }
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "SYMBOL=USD*;EXCHANGE=????", "????", errors
+        "SYMBOL=USD*;EXCHANGE=????", "????", exchange_type, reference_market, errors
     ) == {
-        "SYMBOL": commons_constants.DEFAULT_REFERENCE_MARKET, # unknown exchange, use default
+        "SYMBOL": commons_constants.DEFAULT_REFERENCE_MARKET,
         "EXCHANGE": "????",
     }
+
+    # TradingView futures suffix (.P): strip suffix from symbol
     assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
-        "SYMBOL=USD*", None, errors
+        "SYMBOL=BTCUSD.P", exchange_name, exchange_type, reference_market, errors
     ) == {
-        "SYMBOL": "USD*", # no exchange, leave as is
+        "SYMBOL": "BTCUSD",
     }
+    # Futures suffix then USD* replacement: USD*.P -> USD* -> USDC
+    assert Mode.TradingViewSignalsTradingMode.parse_signal_data(
+        "SYMBOL=USD*.P", exchange_name, exchange_type, reference_market, errors
+    ) == {
+        "SYMBOL": "USDC",
+    }
+
     assert errors == []
 
 
@@ -1105,14 +1147,14 @@ async def test_ensure_blockchain_wallet_balance(tools, blockchain_wallet_details
         "holdings": 5.0,
         "wallet_details": blockchain_wallet_details,
     }
-    wallet = trading_api.create_blockchain_wallet(blockchain_wallet_details, exchange_manager.trader)
+    async with trading_api.blockchain_wallet_context(blockchain_wallet_details, exchange_manager.trader) as wallet:
     
-    with mock.patch.object(producer.logger, "info") as logger_info_mock:
-        await producer.ensure_blockchain_wallet_balance(parsed_data)
-        
-        logger_info_mock.assert_called_once()
-        assert "Enough" in str(logger_info_mock.call_args)
-        assert BLOCKCHAIN_WALLET_ASSET in str(logger_info_mock.call_args)
+        with mock.patch.object(producer.logger, "info") as logger_info_mock:
+            await producer.ensure_blockchain_wallet_balance(parsed_data)
+            
+            logger_info_mock.assert_called_once()
+            assert "Enough" in str(logger_info_mock.call_args)
+            assert BLOCKCHAIN_WALLET_ASSET in str(logger_info_mock.call_args)
     
     # Test with insufficient balance
     blockchain_wallet_details.wallet_descriptor.specific_config = {
@@ -1122,25 +1164,25 @@ async def test_ensure_blockchain_wallet_balance(tools, blockchain_wallet_details
                 blockchain_wallet_simulator.BlockchainWalletSimulatorConfigurationKeys.AMOUNT.value: 2.0
             }
         ]}
-    wallet = trading_api.create_blockchain_wallet(blockchain_wallet_details, exchange_manager.trader)
+    async with trading_api.blockchain_wallet_context(blockchain_wallet_details, exchange_manager.trader) as wallet:
     
-    with pytest.raises(trading_view_signals_trading_mode_errors.MissingFundsError) as exc_info:
-        await producer.ensure_blockchain_wallet_balance(parsed_data)
-    assert "Not enough" in str(exc_info.value)
-    assert BLOCKCHAIN_WALLET_ASSET in str(exc_info.value)
-    assert "available: 2" in str(exc_info.value)
-    assert "required: 5" in str(exc_info.value)
+        with pytest.raises(trading_view_signals_trading_mode_errors.MissingFundsError) as exc_info:
+            await producer.ensure_blockchain_wallet_balance(parsed_data)
+        assert "Not enough" in str(exc_info.value)
+        assert BLOCKCHAIN_WALLET_ASSET in str(exc_info.value)
+        assert "available: 2" in str(exc_info.value)
+        assert "required: 5" in str(exc_info.value)
     
     # Test when asset not in wallet balance
     blockchain_wallet_details.wallet_descriptor.specific_config = {
         blockchain_wallet_simulator.BlockchainWalletSimulatorConfigurationKeys.ASSETS.value: []
     }
-    wallet = trading_api.create_blockchain_wallet(blockchain_wallet_details, exchange_manager.trader)
+    async with trading_api.blockchain_wallet_context(blockchain_wallet_details, exchange_manager.trader) as wallet:
     
-    with pytest.raises(trading_view_signals_trading_mode_errors.MissingFundsError) as exc_info:
-        await producer.ensure_blockchain_wallet_balance(parsed_data)
-    assert "Not enough" in str(exc_info.value)
-    assert "available: 0" in str(exc_info.value)
+        with pytest.raises(trading_view_signals_trading_mode_errors.MissingFundsError) as exc_info:
+            await producer.ensure_blockchain_wallet_balance(parsed_data)
+        assert "Not enough" in str(exc_info.value)
+        assert "available: 0" in str(exc_info.value)
 
 
 async def test_withdraw_funds(tools):

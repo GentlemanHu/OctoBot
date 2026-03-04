@@ -21,6 +21,10 @@ import logging
 import octobot_commons.list_util as list_util
 import octobot_commons.dataclasses
 
+import octobot_tentacles_manager.api
+
+import octobot_node.config
+
 try:
     import mini_octobot
     import mini_octobot.environment
@@ -29,6 +33,9 @@ try:
 
     # ensure environment is initialized
     mini_octobot.environment.initialize_environment(True)
+    # reload tentacles info to ensure mini-octobot tentacles are loaded
+    octobot_tentacles_manager.api.reload_tentacle_info()
+
 
 except ImportError:
     logging.getLogger("octobot_node.scheduler.octobot_lib").warning("OctoBot is not installed, OctoBot actions will not be available")
@@ -90,14 +97,30 @@ class OctoBotActionsJobDescription(octobot_commons.dataclasses.MinimizableDatacl
         )
 
 
+def required_actions(func):
+    def get_required_actions_wrapper(self, *args, **kwargs):
+        if self.processed_actions is None:
+            raise ValueError("No bot actions were executed yet")
+        return func(self, *args, **kwargs)
+    return get_required_actions_wrapper
+
+
 @dataclasses.dataclass
 class OctoBotActionsJobResult:
     processed_actions: list[mini_octobot.BotActionDetails]
     next_actions_description: typing.Optional[OctoBotActionsJobDescription] = None
 
+    @required_actions
+    def get_failed_actions(self) -> list[dict]:
+        failed_actions = [
+            action.result
+            for action in self.processed_actions
+            if action.result and isinstance(action.result, dict) and "error" in action.result
+        ]
+        return failed_actions
+
+    @required_actions
     def get_created_orders(self) -> list[dict]:
-        if self.processed_actions is None:
-            raise ValueError("No bot actions were executed yet")
         order_lists = [
             action.result.get("orders", [])
             for action in self.processed_actions
@@ -105,9 +128,8 @@ class OctoBotActionsJobResult:
         ]
         return list_util.flatten_list(order_lists) if order_lists else []
     
+    @required_actions
     def get_deposit_and_withdrawal_details(self) -> list[dict]:
-        if self.processed_actions is None:
-            raise ValueError("No bot actions were executed yet")
         withdrawal_lists = [
             action.result
             for action in self.processed_actions
@@ -117,14 +139,14 @@ class OctoBotActionsJobResult:
 
 
 class OctoBotActionsJob:
-    def __init__(self, description: str):
+    def __init__(self, description: typing.Union[str, dict]):
         parsed_description = self._parse_description(description)
         self.description: OctoBotActionsJobDescription = OctoBotActionsJobDescription.from_dict(
             parsed_description
         )
         self.after_execution_state = None
 
-    def _parse_description(self, description: str) -> dict:
+    def _parse_description(self, description: typing.Union[str, dict]) -> dict:
         if isinstance(description, dict):
             # normal Non-init case
             parsed_description = description

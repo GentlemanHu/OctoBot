@@ -194,7 +194,10 @@ class TradingViewSignalsTradingMode(trading_modes.AbstractTradingMode):
         return consumers + await self._get_feed_consumers()
 
     @classmethod
-    def _adapt_symbol(cls, parsed_data, exchange_name: typing.Optional[str]):
+    def _adapt_symbol(
+        cls, parsed_data, exchange_name: typing.Optional[str],
+        exchange_type: typing.Optional[trading_enums.ExchangeTypes], reference_market: typing.Optional[str]
+    ):
         if cls.SYMBOL_KEY not in parsed_data:
             return
         symbol = parsed_data[cls.SYMBOL_KEY]
@@ -203,8 +206,12 @@ class TradingViewSignalsTradingMode(trading_modes.AbstractTradingMode):
                 parsed_data[cls.SYMBOL_KEY] = symbol.split(suffix)[0]
                 break
         if exchange_name and cls.GENERIC_USD_STABLECOIN_SYMBOL in parsed_data[cls.SYMBOL_KEY]:
-            # replace the generic USD stablecoin symbol with the actual stablecoin symbol for this exchange
-            default_reference_market = scripting_library.get_default_exchange_reference_market(exchange_name)
+            if exchange_type == trading_enums.ExchangeTypes.FUTURE and reference_market is not None:
+                # futures: use the reference market value
+                default_reference_market = reference_market
+            else:
+                # replace the generic USD stablecoin symbol with the actual stablecoin symbol for this exchange
+                default_reference_market = scripting_library.get_default_exchange_reference_market(exchange_name)
             replaced_symbol = parsed_data[cls.SYMBOL_KEY].replace(cls.GENERIC_USD_STABLECOIN_SYMBOL, default_reference_market)
             commons_logging.get_logger(cls.__name__).info(
                 f"Replaced generic USD stablecoin symbol {parsed_data[cls.SYMBOL_KEY]} with {replaced_symbol} for exchange {exchange_name} in signal data: {parsed_data}"
@@ -214,7 +221,8 @@ class TradingViewSignalsTradingMode(trading_modes.AbstractTradingMode):
 
     @classmethod
     def parse_signal_data(
-        cls, signal_data: typing.Union[str, dict], exchange_name: typing.Optional[str], errors: list
+        cls, signal_data: typing.Union[str, dict], exchange_name: typing.Optional[str],
+        exchange_type: typing.Optional[trading_enums.ExchangeTypes], reference_market: typing.Optional[str], errors: list
     ) -> dict:
         if isinstance(signal_data, dict):
             # already parsed: return a deep copy to avoid modifying the original data
@@ -240,7 +248,7 @@ class TradingViewSignalsTradingMode(trading_modes.AbstractTradingMode):
             except IndexError:
                 errors.append(f"Invalid signal line in trading view signal, ignoring it. Line: \"{line}\"")
 
-        cls._adapt_symbol(parsed_data, exchange_name)
+        cls._adapt_symbol(parsed_data, exchange_name, exchange_type, reference_market)
         return parsed_data
 
 
@@ -307,7 +315,12 @@ class TradingViewSignalsTradingMode(trading_modes.AbstractTradingMode):
     async def _trading_view_signal_callback(self, data):
         signal_data = data.get("metadata", "")
         errors = []
-        parsed_data = self.parse_signal_data(signal_data, self.exchange_manager.exchange_name, errors)
+        parsed_data = self.parse_signal_data(
+            signal_data, self.exchange_manager.exchange_name, 
+            trading_exchanges.get_exchange_type(self.exchange_manager), 
+            self.exchange_manager.exchange_personal_data.portfolio_manager.reference_market, 
+            errors
+        )
         for error in errors:
             self.logger.error(error)
         try:
@@ -658,11 +671,11 @@ class TradingViewSignalsModeProducer(daily_trading_mode.DailyTradingModeProducer
 
     async def ensure_blockchain_wallet_balance(self, parsed_data: dict) -> decimal.Decimal:
         ensure_blockchain_wallet_balance_params = actions_params.EnsureBlockchainWalletBalanceParams.from_dict(parsed_data)
-        wallet = trading_api.create_blockchain_wallet(
+        async with trading_api.blockchain_wallet_context(
             ensure_blockchain_wallet_balance_params.wallet_details, 
             self.exchange_manager.trader
-        )
-        wallet_balance = await wallet.get_balance()
+        ) as wallet:
+            wallet_balance = await wallet.get_balance()
         balance = wallet_balance[ensure_blockchain_wallet_balance_params.asset][
             trading_constants.CONFIG_PORTFOLIO_FREE
         ] if ensure_blockchain_wallet_balance_params.asset in wallet_balance else trading_constants.ZERO
@@ -703,26 +716,26 @@ class TradingViewSignalsModeProducer(daily_trading_mode.DailyTradingModeProducer
     
     async def transfer_funds(self, parsed_data: dict) -> dict:
         transfer_funds_params = actions_params.TransferFundsParams.from_dict(parsed_data)
-        wallet = trading_api.create_blockchain_wallet(
+        async with trading_api.blockchain_wallet_context(
             transfer_funds_params.wallet_details, 
             self.exchange_manager.trader
-        )
-        if transfer_funds_params.address:
-            address = transfer_funds_params.address
-        elif transfer_funds_params.destination_exchange == self.exchange_manager.exchange_name:
-            address = (
-                await self.exchange_manager.trader.get_deposit_address(transfer_funds_params.asset)
-            )[trading_enums.ExchangeConstantsDepositAddressColumns.ADDRESS.value]
-        else:
-            raise trading_errors.InvalidArgumentError(
-                f"Unsupported destination exchange: {transfer_funds_params.destination_exchange}"
+        ) as wallet:
+            if transfer_funds_params.address:
+                address = transfer_funds_params.address
+            elif transfer_funds_params.destination_exchange == self.exchange_manager.exchange_name:
+                address = (
+                    await self.exchange_manager.trader.get_deposit_address(transfer_funds_params.asset)
+                )[trading_enums.ExchangeConstantsDepositAddressColumns.ADDRESS.value]
+            else:
+                raise trading_errors.InvalidArgumentError(
+                    f"Unsupported destination exchange: {transfer_funds_params.destination_exchange}"
+                )
+            # requires ALLOW_FUNDS_TRANSFER env to be True (disabled by default to protect funds)
+            transaction = await wallet.withdraw(
+                transfer_funds_params.asset,
+                decimal.Decimal(str(transfer_funds_params.amount)),
+                transfer_funds_params.wallet_details.blockchain_descriptor.network,
+                address,
             )
-        # requires ALLOW_FUNDS_TRANSFER env to be True (disabled by default to protect funds)
-        transaction = await wallet.withdraw(
-            transfer_funds_params.asset,
-            decimal.Decimal(str(transfer_funds_params.amount)),
-            transfer_funds_params.wallet_details.blockchain_descriptor.network,
-            address,
-        )
         self.logger.info(f"Transferred {transfer_funds_params.amount} {transfer_funds_params.asset}: {transaction}")
         return transaction
