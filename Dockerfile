@@ -14,7 +14,7 @@ RUN apt-get update \
         libxslt1-dev \
         libxslt-dev \
         libjpeg62-turbo-dev \
-        libatlas-base-dev \
+        libopenblas-dev \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -54,7 +54,7 @@ RUN apt-get update \
         zlib1g-dev \
         libblas-dev \
         liblapack-dev \
-        libatlas-base-dev \
+        libopenblas-dev \
         libopenjp2-7 \
         libtiff-dev \
     && rm -rf /var/lib/apt/lists/* \
