@@ -17,6 +17,7 @@ import math
 import pytest
 import mock
 import time
+
 import octobot_commons.dsl_interpreter as dsl_interpreter
 import octobot_commons.errors
 
@@ -113,6 +114,16 @@ async def test_interpreter_mixed_basic_operations(interpreter):
 
 
 @pytest.mark.asyncio
+async def test_and_or_short_circuit(interpreter):
+    # and short-circuits: False and (None - 1) should not crash
+    assert await interpreter.interprete("False and None - 1") is False
+    assert await interpreter.interprete("None is not None and None - 1 > 0") is False
+    # or short-circuits: True or (None - 1) should not crash
+    assert await interpreter.interprete("True or None - 1") is True
+    assert await interpreter.interprete("1 > 0 or None - 1 > 0") is True
+
+
+@pytest.mark.asyncio
 async def test_interpreter_call_operations(interpreter):
     assert await interpreter.interprete("max(1, 2, 3)") == 3
     assert await interpreter.interprete("min(1, 2, 3)") == 1
@@ -203,3 +214,19 @@ async def test_interpreter_insupported_operations(interpreter):
         await interpreter.interprete("oscillate(100, 10, -1)")
     with pytest.raises(octobot_commons.errors.InvalidParametersError):
         await interpreter.interprete("oscillate(100, 10, 0)")
+
+
+@pytest.mark.asyncio
+async def test_error_operator(interpreter):
+    assert "error" in interpreter.operators_by_name
+
+    with pytest.raises(octobot_commons.errors.ErrorStatementEncountered, match="123-error"):
+        await interpreter.interprete("error('123-error')")
+
+    with pytest.raises(octobot_commons.errors.ErrorStatementEncountered):
+        await interpreter.interprete("error")
+
+    with pytest.raises(octobot_commons.errors.ErrorStatementEncountered, match="123-error"):
+        await interpreter.interprete("error('123-error') if True else 'ok'")
+
+    assert await interpreter.interprete("error('123-error') if False else 'ok'") == "ok"

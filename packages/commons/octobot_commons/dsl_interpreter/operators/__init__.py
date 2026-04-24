@@ -42,6 +42,14 @@ from octobot_commons.dsl_interpreter.operators.subscripting_operator import (
 from octobot_commons.dsl_interpreter.operators.iterable_operator import (
     IterableOperator,
 )
+from octobot_commons.dsl_interpreter.operators.pre_computing_call_operator import (
+    PreComputingCallOperator,
+)
+from octobot_commons.dsl_interpreter.operators.re_callable_operator_mixin import (
+    ReCallableOperatorMixin,
+    ReCallingOperatorResult,
+    ReCallingOperatorResultKeys,
+)
 
 __all__ = [
     "BinaryOperator",
@@ -53,4 +61,8 @@ __all__ = [
     "ExpressionOperator",
     "SubscriptingOperator",
     "IterableOperator",
+    "PreComputingCallOperator",
+    "ReCallableOperatorMixin",
+    "ReCallingOperatorResult",
+    "ReCallingOperatorResultKeys",
 ]

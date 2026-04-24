@@ -24,7 +24,7 @@ import octobot_commons.timestamp_util as timestamp_util
 import octobot_trading.exchange_channel as exchange_channel
 import octobot_trading.exchanges as exchanges
 import octobot_trading.personal_data as personal_data
-import octobot_trading.exchange_data as exchange_data
+import octobot_trading.exchange_data
 import octobot_trading.constants as constants
 import octobot_trading.enums as enums
 import octobot_trading.util as util
@@ -33,6 +33,9 @@ import octobot_trading.storage as storage
 import octobot_trading.exchanges.config.exchange_credentials_data as exchange_credentials_data
 import trading_backend.exchanges
 
+
+if typing.TYPE_CHECKING:
+    import octobot_trading.exchanges.util.exchange_data as exchange_data_import
 
 class ExchangeManager(util.Initializable):
     def __init__(self, config, exchange_class_string):
@@ -74,8 +77,6 @@ class ExchangeManager(util.Initializable):
 
         self.trader: exchanges.Trader = None # type: ignore
         self.exchange: exchanges.RestExchange = None # type: ignore
-        self.preconfigured_exchange: typing.Optional[exchanges.RestExchange] = None
-        self.leave_rest_exchange_open: bool = False
         self.exchange_backend: trading_backend.exchanges.Exchange = None # type: ignore
         self.is_broker_enabled: bool = False
         self.trading_modes: list = []
@@ -88,7 +89,9 @@ class ExchangeManager(util.Initializable):
         self.storage_manager: storage.StorageManager = storage.StorageManager(self)
         self.exchange_config: exchanges.ExchangeConfig = exchanges.ExchangeConfig(self)
         self.exchange_personal_data: personal_data.ExchangePersonalData = personal_data.ExchangePersonalData(self)
-        self.exchange_symbols_data: exchange_data.ExchangeSymbolsData = exchange_data.ExchangeSymbolsData(self)
+        self.exchange_symbols_data: octobot_trading.exchange_data.ExchangeSymbolsData = (
+            octobot_trading.exchange_data.ExchangeSymbolsData(self)
+        )
 
         self.debug_info: dict[str, typing.Any] = {}
 
@@ -134,26 +137,24 @@ class ExchangeManager(util.Initializable):
         # stop exchange channels
         if enable_logs:
             self.logger.debug(f"Stopping exchange channels for exchange_id: {self.id} ...")
-        if self.exchange is not None and not self.leave_rest_exchange_open:
-            try:
-                exchange_channel.get_exchange_channels(self.id)
-                await exchange_channel.stop_exchange_channels(self, should_warn=warning_on_missing_elements)
-            except KeyError:
-                # no exchange channel to stop
-                pass
-            except Exception as err:
-                self.logger.exception(err, True, f"Error when stopping exchange channels: {err}")
+        try:
+            exchange_channel.get_exchange_channels(self.id)
+            await exchange_channel.stop_exchange_channels(self, should_warn=warning_on_missing_elements)
+        except KeyError:
+            # no exchange channel to stop
+            pass
+        except Exception as err:
+            self.logger.exception(err, True, f"Error when stopping exchange channels: {err}")
+        if self.exchange is not None:
+            # ensure self.exchange still exists as await self.exchange.stop()
+            # internally uses asyncio.sleep within ccxt
+            exchanges.Exchanges.instance().del_exchange(
+                self.exchange.name, self.id, should_warn=warning_on_missing_elements
+            )
             try:
                 await self.exchange.stop()
             except Exception as err:
                 self.logger.exception(err, True, f"Error when stopping exchange: {err}")
-            if self.exchange is not None:
-                # ensure self.exchange still exists as await self.exchange.stop()
-                # internally uses asyncio.sleep within ccxt
-                exchanges.Exchanges.instance().del_exchange(
-                    self.exchange.name, self.id, should_warn=warning_on_missing_elements
-                )
-                self.exchange.exchange_manager = None # type: ignore
             self.exchange = None # type: ignore
         if self.exchange_personal_data is not None:
             try:
@@ -206,6 +207,38 @@ class ExchangeManager(util.Initializable):
         await self.exchange_personal_data.initialize()
         await self.exchange_config.initialize()
 
+    async def initialize_from_exchange_data(
+        self,
+        exchange_data: "exchange_data_import.ExchangeData",
+        price_by_symbol: dict[str, float],
+        ignore_orders_and_trades: bool,
+        lock_chained_orders_funds: bool,
+        as_simulator: bool,
+    ) -> None:
+        """
+        Initialize trader positions and orders from exchange data by delegating to all relevant managers.
+        """
+        await self.trader.initialize()
+        self.exchange_symbols_data.initialize_from_exchange_data(exchange_data, price_by_symbol)
+        self.exchange_personal_data.portfolio_manager.portfolio_value_holder.initialize_from_exchange_data(
+            exchange_data, price_by_symbol
+        )
+        if not ignore_orders_and_trades:
+            if exchange_data.trades:
+                self.exchange_personal_data.trades_manager.initialize_from_exchange_data(exchange_data)
+            if (
+                exchange_data.orders_details.open_orders
+                and exchange_data.orders_details.open_orders[0]
+                .get(constants.STORAGE_ORIGIN_VALUE, {})
+                .get(enums.ExchangeConstantsOrderColumns.TYPE.value)
+            ):
+                await self.exchange_personal_data.orders_manager.initialize_from_exchange_data(exchange_data)
+            if lock_chained_orders_funds:
+                await self.exchange_personal_data.portfolio_manager.initialize_from_exchange_data(exchange_data)
+            self.exchange_personal_data.positions_manager.initialize_from_exchange_data(
+                exchange_data, exclusively_use_exchange_position_details=not as_simulator
+            )
+
     def load_constants(self):
         if not self.is_backtesting:
             self._load_config_symbols_and_time_frames()
@@ -220,7 +253,7 @@ class ExchangeManager(util.Initializable):
         return self.config[common_constants.CONFIG_TRADER][common_constants.CONFIG_ENABLED_OPTION]
 
     def reset_exchange_symbols_data(self):
-        self.exchange_symbols_data = exchange_data.ExchangeSymbolsData(self)
+        self.exchange_symbols_data = octobot_trading.exchange_data.ExchangeSymbolsData(self)
 
     def reset_exchange_personal_data(self):
         self.exchange_personal_data = personal_data.ExchangePersonalData(self)

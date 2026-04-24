@@ -19,6 +19,8 @@ import typing
 import octobot_commons.errors
 import octobot_commons.dsl_interpreter.operator as dsl_interpreter_operator
 import octobot_commons.dsl_interpreter.interpreter_dependency as dsl_interpreter_dependency
+import octobot_commons.dsl_interpreter.parameters_util as parameters_util
+import octobot_commons.dsl_interpreter.dsl_call_result as dsl_call_result
 
 
 class Interpreter:
@@ -45,6 +47,7 @@ class Interpreter:
             dsl_interpreter_operator.Operator,
             dsl_interpreter_operator.ComputedOperatorParameterType,
         ] = None
+        self._parsed_expression: typing.Optional[str] = None
 
     def extend(
         self, operators: typing.List[typing.Type[dsl_interpreter_operator.Operator]]
@@ -73,7 +76,7 @@ class Interpreter:
 
     def get_dependencies(
         self,
-    ) -> typing.List[dsl_interpreter_dependency.InterpreterDependency]:
+    ) -> list[dsl_interpreter_dependency.InterpreterDependency]:
         """
         Get the dependencies of the interpreter's parsed expression.
         """
@@ -109,10 +112,17 @@ class Interpreter:
         # it consists of a single expression, or 'single' if it consists of a single
         # interactive statement.
         # docs: https://docs.python.org/3/library/functions.html#compile
-        tree = ast.parse(expression, mode="eval")
-
-        # Visit the AST and convert nodes to Operator instances
-        self._operator_tree_or_constant = self._visit_node(tree.body)
+        self._parsed_expression = expression
+        try:
+            tree = ast.parse(expression, mode="eval")
+            self._operator_tree_or_constant = self._visit_node(tree.body)
+        except SyntaxError:
+            tree = ast.parse(expression, mode="single")
+            if len(tree.body) != 1:
+                raise octobot_commons.errors.DSLInterpreterError(
+                    "Single statement required when using statement mode"
+                )
+            self._operator_tree_or_constant = self._visit_node(tree.body[0])
 
     async def compute_expression(
         self,
@@ -128,6 +138,25 @@ class Interpreter:
             await self._operator_tree_or_constant.pre_compute()
             return self._operator_tree_or_constant.compute()
         return self._operator_tree_or_constant
+
+    async def compute_expression_with_result(
+        self,
+    ) -> dsl_call_result.DSLCallResult:
+        """
+        Compute the result of the expression stored in self._operator_tree_or_constant.
+        If the expression is a constant, return it directly.
+        If the expression is an operator, pre_compute and compute its result.
+        """
+        try:
+            return dsl_call_result.DSLCallResult(
+                statement=self._parsed_expression,
+                result=await self.compute_expression(),
+            )
+        except octobot_commons.errors.ErrorStatementEncountered as err:
+            return dsl_call_result.DSLCallResult(
+                statement=self._parsed_expression,
+                error=err.args[0] if err.args else ""
+            )
 
     def _visit_node(self, node: typing.Optional[ast.AST]) -> typing.Union[
         dsl_interpreter_operator.Operator,
@@ -159,7 +188,26 @@ class Interpreter:
                     )
                     for arg in node.args
                 ]
-                return operator_class(*args)
+                kwargs = {}
+                for kw in node.keywords:
+                    value = (
+                        self._get_value_from_constant_node(kw.value)
+                        if isinstance(kw.value, ast.Constant)
+                        else self._visit_node(kw.value)
+                    )
+                    if kw.arg is not None:
+                        kwargs[kw.arg] = value
+                    else:
+                        if isinstance(value, dict):
+                            kwargs.update(value)
+                        else:
+                            raise octobot_commons.errors.UnsupportedOperatorError(
+                                f"**kwargs must unpack a dict, got {type(value).__name__}"
+                            )
+                args, kwargs = parameters_util.resolve_operator_args_and_kwargs(
+                    operator_class, args, kwargs
+                )
+                return operator_class(*args, **kwargs)
             raise octobot_commons.errors.UnsupportedOperatorError(
                 f"Unknown operator: {func_name}"
             )
@@ -189,19 +237,28 @@ class Interpreter:
 
         if isinstance(node, ast.Compare):
             # Comparison: left op right
-            if len(node.ops) == 1 and len(node.comparators) == 1:
-                op_name = type(node.ops[0]).__name__
-                if op_name in self.operators_by_name:
-                    operator_class = self.operators_by_name[op_name]
-                    left = self._visit_node(node.left)
-                    right = self._visit_node(node.comparators[0])
-                    return operator_class(left, right)
+            # Handles both single comparisons (a < b) and chained comparisons (a < b <= c)
+            # Chained comparisons are decomposed into: (a < b) And (b <= c)
+            comparisons = []
+            left = self._visit_node(node.left)
+            for op, comparator in zip(node.ops, node.comparators):
+                op_name = type(op).__name__
+                if op_name not in self.operators_by_name:
+                    raise octobot_commons.errors.UnsupportedOperatorError(
+                        f"Unknown comparison operator: {op_name}"
+                    )
+                operator_class = self.operators_by_name[op_name]
+                right = self._visit_node(comparator)
+                comparisons.append(operator_class(left, right))
+                left = right
+            if len(comparisons) == 1:
+                return comparisons[0]
+            and_op_name = ast.And.__name__
+            if and_op_name not in self.operators_by_name:
                 raise octobot_commons.errors.UnsupportedOperatorError(
-                    f"Unknown comparison operator: {op_name}"
+                    f"Chained comparisons require the '{and_op_name}' operator"
                 )
-            raise octobot_commons.errors.UnsupportedOperatorError(
-                "Multiple comparisons not supported"
-            )
+            return self.operators_by_name[and_op_name](*comparisons)
 
         if isinstance(node, (ast.Constant)):
             # Literal values: numbers, strings, booleans, None
@@ -259,6 +316,23 @@ class Interpreter:
                 operands = [self._visit_node(operand) for operand in node.elts]
                 return operator_class(*operands)
 
+        if isinstance(node, ast.Dict):
+            # Dict: {"a": 1, "b": 2} or {"a": 1, **other}
+            op_name = ast.Dict.__name__
+            result = {}
+            for key, value in zip(node.keys, node.values):
+                if key is not None:
+                    result[self._visit_node(key)] = self._visit_node(value)
+                else:
+                    unpacked = self._visit_node(value)
+                    if isinstance(unpacked, dict):
+                        result.update(unpacked)
+                    else:
+                        raise octobot_commons.errors.UnsupportedOperatorError(
+                            f"** unpacking in dict requires a dict, got {type(unpacked).__name__}"
+                        )
+            return result
+
         if isinstance(node, ast.Slice):
             # Slice: slice(1, 2, 3)
             op_name = ast.Slice.__name__
@@ -268,6 +342,32 @@ class Interpreter:
                 upper = self._visit_node(node.upper)
                 step = self._visit_node(node.step)
                 return operator_class(lower, upper, step)
+
+        if isinstance(node, ast.Raise):
+            # Raise statement: raise exc [from cause] - maps to RaiseOperator
+            op_name = "raise"
+            if op_name in self.operators_by_name:
+                operator_class = self.operators_by_name[op_name]
+                args = []
+                if node.exc is not None:
+                    args.append(
+                        self._get_value_from_constant_node(node.exc)
+                        if isinstance(node.exc, ast.Constant)
+                        else self._visit_node(node.exc)
+                    )
+                if node.cause is not None:
+                    args.append(
+                        self._get_value_from_constant_node(node.cause)
+                        if isinstance(node.cause, ast.Constant)
+                        else self._visit_node(node.cause)
+                    )
+                args, kwargs = parameters_util.resolve_operator_args_and_kwargs(
+                    operator_class, args, {}
+                )
+                return operator_class(*args, **kwargs)
+            raise octobot_commons.errors.UnsupportedOperatorError(
+                f"Unknown operator: {op_name}"
+            )
 
         raise octobot_commons.errors.UnsupportedOperatorError(
             f"Unsupported AST node type: {type(node).__name__}"
@@ -289,7 +389,7 @@ class Interpreter:
         """Extract a literal value from an AST constant node."""
         value = node.value
         # Filter out unsupported types like complex numbers or Ellipsis
-        if isinstance(value, (str, int, float, bool, type(None))):
+        if isinstance(value, (str, int, float, bool, type(None), dict)):
             return value
         raise octobot_commons.errors.UnsupportedOperatorError(
             f"Unsupported constant type: {type(value).__name__}"

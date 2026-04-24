@@ -63,6 +63,11 @@ from tentacles.Meta.DSL_operators.python_std_operators.base_call_operators impor
     SinOperator,
     CosOperator,
     OscillatorOperator,
+    ErrorOperator,
+)
+import tentacles.Meta.DSL_operators.python_std_operators.base_resetting_operators as dsl_interpreter_base_resetting_operators
+from tentacles.Meta.DSL_operators.python_std_operators.base_resetting_operators import (
+    WaitOperator,
 )
 import tentacles.Meta.DSL_operators.python_std_operators.base_name_operators as dsl_interpreter_base_name_operators
 from tentacles.Meta.DSL_operators.python_std_operators.base_name_operators import (
@@ -80,6 +85,10 @@ from tentacles.Meta.DSL_operators.python_std_operators.base_subscripting_operato
 import tentacles.Meta.DSL_operators.python_std_operators.base_iterable_operators as dsl_interpreter_base_iterable_operators
 from tentacles.Meta.DSL_operators.python_std_operators.base_iterable_operators import (
     ListOperator,
+)
+import tentacles.Meta.DSL_operators.python_std_operators.base_time_operators as dsl_interpreter_base_time_operators
+from tentacles.Meta.DSL_operators.python_std_operators.base_time_operators import (
+    NowMsOperator,
 )
 
 __all__ = [
@@ -117,9 +126,12 @@ __all__ = [
     "SinOperator",
     "CosOperator",
     "OscillatorOperator",
+    "WaitOperator",
     "PiOperator",
     "IfExpOperator",
     "SubscriptOperator",
     "SliceOperator",
     "ListOperator",
+    "ErrorOperator",
+    "NowMsOperator",
 ]

@@ -205,6 +205,7 @@ RETRIABLE_EXCHANGE_ERRORS_DESC: set[str] = set(os.getenv(
         ':read ECONNRESET:read ETIMEDOUT'
     )
 ).split(":"))
+USE_CCXT_SHARED_MARKETS_CACHE = os_util.parse_boolean_environment_var("USE_CCXT_SHARED_MARKETS_CACHE", "True")
 
 # exchange proxy
 RETRIABLE_EXCHANGE_PROXY_ERRORS_DESC: set[str] = set(os.getenv(
@@ -213,6 +214,11 @@ RETRIABLE_EXCHANGE_PROXY_ERRORS_DESC: set[str] = set(os.getenv(
 
 # used to force margin type update before positions init (if necessary)
 FORCED_MARGIN_TYPE = enums.MarginType(os.getenv("FORCED_MARGIN_TYPE", enums.MarginType.ISOLATED.value))
+MINIMAL_POSITION_IDENTIFICATION_DETAILS_KEYS = [
+    enums.ExchangeConstantsPositionColumns.LOCAL_ID.value,  # to fetch position
+    enums.ExchangeConstantsPositionColumns.SYMBOL.value,  # to fetch position
+    enums.ExchangeConstantsPositionColumns.LEVERAGE.value,  # to keep user configured leverage
+]
 
 # API
 API_LOGGER_TAG = "TradingApi"
@@ -243,6 +249,8 @@ MAX_TRADES_COUNT = int(os.getenv("MAX_TRADES_COUNT", "10000"))    # larger value
 # History
 DEFAULT_SAVED_HISTORICAL_TIMEFRAMES = [commons_enums.TimeFrames.ONE_DAY]
 HISTORICAL_CANDLES_FETCH_DEFAULT_TIMEOUT = 30
+MIN_CANDLES_HISTORY_SIZE = 2  # ensure that at least 2 candles are fetch to avoid issues were candles are not yet
+# available on exchange ending up in empty candles fetch
 
 # 946742400 is 01/01/2000, if trade time is lower, there is an issue.
 MINIMUM_VAL_TRADE_TIME = 946688400

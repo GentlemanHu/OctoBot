@@ -76,6 +76,7 @@ CONFIG_AVATAR = "avatar"
 CONFIG_ORIGIN_URL = "origin_url"
 CONFIG_AUTO_UPDATE = "auto_update"
 CONFIG_READ_ONLY = "read_only"
+CONFIG_HIDDEN = "hidden"
 CONFIG_IMPORTED = "imported"
 CONFIG_EXTRA_BACKTESTING_TIME_FRAMES = "extra_backtesting_time_frames"
 CONFIG_COMPLEXITY = "complexity"
@@ -249,6 +250,7 @@ FORCE_BACKTESTING_LOGS = parse_boolean_environment_var(
 # DSL interpreter
 BASE_OPERATORS_LIBRARY = "base"
 CONTEXTUAL_OPERATORS_LIBRARY = "contextual"
+UNRESOLVED_PARAMETER_PLACEHOLDER = "UNRESOLVED_PARAMETER"
 
 # Logging
 EXCEPTION_DESC = "exception_desc"

@@ -4,9 +4,11 @@ pants_version = "2.30.0"
 backend_packages = [
     "pants.backend.python",
     "pants.backend.docker",
+    "pants.backend.shell",
     "python_plugins",
 ]
 pants_ignore_use_gitignore = false
+pants_ignore = ["venv/"]
 pantsd = true
 pantsd_max_memory_usage = "6GiB"
 pythonpath = ["%(buildroot)s/pants-plugins"]
@@ -24,7 +26,9 @@ root_patterns = [
     "/packages/commons",
     "/packages/evaluators",
     "/packages/node",
+    "/packages/flow",
     "/packages/services",
+    "/packages/sync",
     "/packages/tentacles_manager",
     "/packages/trading",
     "/packages/trading_backend",

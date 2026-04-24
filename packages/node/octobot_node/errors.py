@@ -20,3 +20,11 @@ class WorkflowError(Exception):
 
 class WorkflowInputError(WorkflowError):
     """Raised when a workflow input is invalid"""
+    
+
+class WorkflowActionExecutionError(WorkflowError):
+    """Raised when a workflow action execution fails"""
+    
+
+class WorkflowPriorityActionExecutionError(WorkflowActionExecutionError):
+    """Raised when a workflow priority action execution fails"""

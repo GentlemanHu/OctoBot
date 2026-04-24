@@ -151,3 +151,27 @@ class InvalidParametersError(DSLInterpreterError):
     """
     Raised when the parameters of an operator are invalid
     """
+
+
+class MissingDefaultValueError(InvalidParametersError):
+    """
+    Raised when a parameter has no default value
+    """
+
+
+class InvalidParameterFormatError(InvalidParametersError):
+    """
+    Raised when the format of a parameter is invalid
+    """
+
+
+class ResolvedParameterNotFoundError(DSLInterpreterError):
+    """
+    Raised when a resolved parameter is not found in the script
+    """
+
+
+class ErrorStatementEncountered(DSLInterpreterError):
+    """
+    Raised when a error statement is encountered when executing a script
+    """

@@ -38,14 +38,30 @@ jobs:
         with:
           node-version: 22
 
-      - name: Build wheel
-        run: pants package :OctoBot
+      - name: Install Rust toolchain
+        if: hashFiles('packages/*/crates/*/Cargo.toml') != ''
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
-      - name: Upload wheel artifact
+      - name: Rust lint & tests
+        if: hashFiles('packages/*/crates/*/Cargo.toml') != ''
+        run: |
+          cargo clippy --workspace -- -D warnings
+          cargo test --workspace
+
+      - name: Install maturin
+        if: hashFiles('packages/*/crates/*/pyproject.toml') != ''
+        run: pip install maturin
+
+      - name: Build wheels
+        run: pants package :OctoBot $(pants list --filter-target-type=package_shell_command ::)
+
+      - name: Upload wheel artifacts
         uses: actions/upload-artifact@v7
         with:
           name: octobot-wheel
-          path: dist/octobot-*.whl
+          path: dist/*.whl
           if-no-files-found: error
 
   tests:
@@ -65,13 +81,27 @@ jobs:
           - packages/commons
           - packages/evaluators
           - packages/node
+          - packages/flow
           - packages/services
+          - packages/sync
           - packages/tentacles_manager
           - packages/trading
           - packages/trading_backend
 
+    env:
+      USES_TENTACLES: ${{ matrix.package == 'octobot' || matrix.package == 'packages/node' || matrix.package == 'packages/flow' }}
+
     steps:
     - uses: actions/checkout@v6
+
+    - name: Detect package features
+      id: detect
+      run: |
+        if ls ${{ matrix.package }}/crates/*/Cargo.toml 1>/dev/null 2>&1; then
+          echo "has_rust=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_rust=false" >> $GITHUB_OUTPUT
+        fi
 
     - name: Set up Python ${{ matrix.version }}
       uses: actions/setup-python@v6
@@ -88,20 +118,34 @@ jobs:
     - name: Install OctoBot
       run: |
         pip3 install -r dev_requirements.txt
-        pip3 install dist/octobot-*.whl
+        pip3 install dist/*.whl
 
     - name: Lint package
       run: |
         if [ -f "${{ matrix.package }}/standard.rc" ]; then
           pylint --rcfile=${{ matrix.package }}/standard.rc ${{ matrix.package }}/
-          if [ $? -ne 1 ]; then exit 0; fi
+          rc=$?
         else
           pylint --rcfile=standard.rc ${{ matrix.package }}/
-          if [ $? -ne 1 ]; then exit 0; fi
+          rc=$?
         fi
+        if [ $rc -eq 1 ]; then exit 1; fi
+
+    - name: Install Rust toolchain
+      if: steps.detect.outputs.has_rust == 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Lint Rust crates
+      if: steps.detect.outputs.has_rust == 'true'
+      run: |
+        for crate in ${{ matrix.package }}/crates/*/; do
+          cargo clippy --manifest-path "$crate/Cargo.toml" -- -D warnings
+        done
 
     - name: Install tentacles
-      if:  matrix.package == 'octobot'
+      if: env.USES_TENTACLES == 'true'
       run: |
         mkdir -p output
         OctoBot tentacles -d packages/tentacles -p any_platform.zip
@@ -113,15 +157,26 @@ jobs:
           pytest tests -n auto --dist loadfile
           pytest --ignore=tentacles/Trading/Exchange tentacles -n auto --dist loadfile
         else
-          cd ${{ matrix.package }}
-          if [ "${{ matrix.package }}" = "packages/tentacles_manager" ] || [ "${{ matrix.package }}" = "packages/node" ]; then
-            pytest tests
+          if [ "${{ matrix.package }}" = "packages/node" ] || [ "${{ matrix.package }}" = "packages/flow" ]; then
+            echo "Running tests from root dir to allow tentacles import"
+            PYTHONPATH=.:$PYTHONPATH pytest ${{ matrix.package }}/tests -n auto --dist loadfile
           else
-            pytest tests -n auto --dist loadfile
+            cd ${{ matrix.package }}
+            if [ "${{ matrix.package }}" = "packages/tentacles_manager" ]; then
+              pytest tests
+            else
+              pytest tests -n auto --dist loadfile
+            fi
           fi
         fi
       env:
         DISABLE_SENTRY: True
+
+    - name: Run Rust backend tests
+      if: steps.detect.outputs.has_rust == 'true'
+      run: |
+        cd ${{ matrix.package }}
+        pytest tests --backend=rust -v
 
   docker:
     name: Build & Push Docker images
@@ -618,6 +673,42 @@ jobs:
           asset_name: OctoBot_macos_arm64
           asset_content_type: application/x-binary
 
+  sync:
+    name: Deploy Sync Server
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/')
+    needs: [docker]
+    environment:
+      name: ${{ startsWith(github.ref, 'refs/tags/') && 'Production - Sync Server' || github.ref == 'refs/heads/master' && 'Staging - Sync Server' || 'Development - Sync Server' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Install Galaxy requirements
+        working-directory: infra/sync/ansible
+        run: ansible-galaxy install -r requirements.yml
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh/id_ed25519
+          chmod 600 infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh/id_ed25519
+
+      - name: Deploy to ${{ vars.ANSIBLE_ENV }}
+        working-directory: infra/sync/ansible
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          ANSIBLE_HOST_KEY_CHECKING: "false"
+        run: |
+          ansible-playbook playbooks/deploy-octobot-sync.yml -i inventories/${{ vars.ANSIBLE_ENV }}
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh/id_ed25519
+
   notify:
     if: ${{ failure() }}
     needs:
@@ -628,6 +719,7 @@ jobs:
       - tentacles
       - release
       - version
+      - sync
     uses: Drakkar-Software/.github/.github/workflows/failure_notify_workflow.yml@master
     secrets:
       DISCORD_GITHUB_WEBHOOK: ${{ secrets.DISCORD_GITHUB_WEBHOOK }}

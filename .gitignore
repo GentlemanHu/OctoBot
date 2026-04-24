@@ -120,7 +120,7 @@ downloaded_temp_tentacles
 !packages/tentacles
 
 # User config
-user/
+user
 temp_config.json
 
 *.csv
@@ -140,6 +140,13 @@ letsencrypt/
 
 # dev env
 .env
+
+# Ansible decrypted temp files, SSH keys, and production collections config
+infra/**/*.dec.yml
+infra/**/.ssh/
+
+# Ansible Galaxy installed roles (installed via requirements.yml)
+infra/**/roles/geerlingguy.*/
 
 # Pants build system
 /.pants.d/

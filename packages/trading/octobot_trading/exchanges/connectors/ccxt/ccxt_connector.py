@@ -248,7 +248,7 @@ class CCXTConnector(abstract_exchange.AbstractExchange):
             )
             try:
                 await self._load_markets(self.client, reload, market_filter=market_filter)
-                ccxt_client_util.set_markets_cache(self.client, authenticated_cache)
+                ccxt_client_util.set_ccxt_client_cache(self.client, authenticated_cache)
             except (
                 ccxt.AuthenticationError, ccxt.ArgumentsRequired, ccxt.static_dependencies.ecdsa.der.UnexpectedDER,
                 binascii.Error, AssertionError, IndexError
@@ -287,7 +287,7 @@ class CCXTConnector(abstract_exchange.AbstractExchange):
                     try:
                         unauth_client = self._client_factory(True)[0]
                         await self._load_markets(unauth_client, reload, market_filter=market_filter)
-                        ccxt_client_util.set_markets_cache(unauth_client, False)
+                        ccxt_client_util.set_ccxt_client_cache(unauth_client, False)
                         # apply markets to target client
                         ccxt_client_util.load_markets_from_cache(self.client, False, market_filter=market_filter)
                         self.logger.debug(
@@ -342,6 +342,9 @@ class CCXTConnector(abstract_exchange.AbstractExchange):
 
     @classmethod
     def get_extended_additional_connector_config(cls, additional_config: dict):
+        """
+        implement in subclass if necessary
+        """
         extended_ccxt_options = {}
         if extended_ccxt_options:
             if additional_config and ccxt_constants.CCXT_OPTIONS in additional_config:

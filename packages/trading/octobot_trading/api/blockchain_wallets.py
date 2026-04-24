@@ -25,7 +25,7 @@ if typing.TYPE_CHECKING:
 @contextlib.asynccontextmanager
 async def blockchain_wallet_context(
     parameters: blockchain_wallets.BlockchainWalletParameters,
-    trader: "octobot_trading.exchanges.Trader"
+    trader: typing.Optional["octobot_trading.exchanges.Trader"],
 ) -> typing.AsyncGenerator[blockchain_wallets.BlockchainWallet, None]:
     wallet = blockchain_wallets.create_blockchain_wallet(parameters, trader)
     async with wallet.open() as wallet:

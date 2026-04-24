@@ -1,34 +1,43 @@
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { Bot, Download, Plus } from "lucide-react"
+import { Bot, Check, Clock, Layers, Plus, Search, Trash2, X } from "lucide-react"
 import { Suspense, useMemo, useState } from "react"
 
-import type { Task, TaskStatus } from "@/client"
+import type { Task_Output as Task, TaskStatus } from "@/client"
 import { TasksService } from "@/client"
-import { CollectionHeader } from "@/components/Common/CollectionHeader"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { LoadingButton } from "@/components/ui/loading-button"
+import useCustomToast from "@/hooks/useCustomToast"
+import { generateCSV, downloadCSV } from "@/lib/csv"
+import { cn } from "@/lib/utils"
+import { getActiveExecution } from "@/utils/executions"
 
 function getTasksQueryOptions() {
   return {
     queryFn: () => TasksService.getTasks({ page: 1, limit: 100 }),
     queryKey: ["tasks"],
+    refetchInterval: 2_000,
   }
 }
 
 const filters = [
-  { value: "all", label: "All" },
-  { value: "running", label: "Running" },
-  { value: "scheduled", label: "Scheduled" },
+  { value: "active", label: "Active" },
   { value: "stopped", label: "Stopped" },
-  { value: "terminated", label: "Terminated" },
 ]
 
 const statusLabels: Record<TaskStatus, string> = {
@@ -37,7 +46,7 @@ const statusLabels: Record<TaskStatus, string> = {
   periodic: "Recurring",
   running: "Running",
   completed: "Stopped",
-  failed: "Terminated",
+  failed: "Failed",
 }
 
 function getStatusVariant(status?: TaskStatus | null) {
@@ -49,71 +58,183 @@ function getStatusVariant(status?: TaskStatus | null) {
 }
 
 function getStatusGroup(status?: TaskStatus | null) {
-  if (!status) return "scheduled"
-  if (status === "running") return "running"
-  if (status === "scheduled" || status === "periodic" || status === "pending") {
-    return "scheduled"
+  if (!status) return "active"
+  if (status === "running" || status === "scheduled" || status === "periodic" || status === "pending") {
+    return "active"
   }
-  if (status === "failed") return "terminated"
   return "stopped"
 }
 
 function getDisplayDate(task: Task) {
-  if (task.started_at) return { label: "Started", value: task.started_at }
-  if (task.scheduled_at) return { label: "Scheduled", value: task.scheduled_at }
-  if (task.completed_at) return { label: "Stopped", value: task.completed_at }
+  const completed_at = getActiveExecution(task.executions)?.completed_at
+  if (completed_at) return { label: "Executed at", value: completed_at }
   return { label: "Created", value: "—" }
 }
 
-function OctobotCard({ task }: { task: Task }) {
-  const label = task.name || `OctoBot ${task.id?.slice(0, 6) || "new"}`
-  const status = task.status || "scheduled"
+
+function formatDate(value: string | null | undefined): string {
+  if (!value || value === "—") return "—"
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value))
+  } catch {
+    return value
+  }
+}
+
+function BotCardBody({ task }: { task: Task }) {
+  const activeExec = getActiveExecution(task.executions)
+  const group = getStatusGroup(activeExec?.status)
   const date = getDisplayDate(task)
+  const stepCount = task.executions?.length ?? 0
+  const pendingSteps = task.executions?.filter((e) => e.status === "pending").length ?? 0
+  const completedSteps = task.executions?.filter((e) => e.status === "completed" || e.status === "failed").length ?? 0
+
+  if (group === "active") {
+    const isRunning = activeExec?.status === "running"
+    return (
+      <CardContent className="flex flex-col gap-2 pt-0">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          {isRunning ? (
+            <>
+              {completedSteps > 0 && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Layers className="size-3.5" />
+                  {completedSteps} done
+                </span>
+              )}
+              {pendingSteps > 0 && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Clock className="size-3.5" />
+                  {pendingSteps} remaining
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              {activeExec?.type && (
+                <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                  {activeExec.type}
+                </span>
+              )}
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Clock className="size-3.5 shrink-0" />
+                {activeExec?.scheduled_at
+                  ? <>Next run: {formatDate(activeExec.scheduled_at as unknown as string)}</>
+                  : <>{date.label}: {formatDate(date.value as string)}</>}
+              </span>
+            </>
+          )}
+        </div>
+        {isRunning && (
+          <div className="text-xs text-muted-foreground">
+            {date.label}: {formatDate(date.value as string)}
+          </div>
+        )}
+      </CardContent>
+    )
+  }
+
+  const isFailed = activeExec?.status === "failed"
 
   return (
-    <Card className="transition-shadow hover:shadow-md">
-      <CardHeader className="gap-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-muted">
-              <Bot className="size-5 text-muted-foreground" />
-            </div>
-            <div>
-              <CardTitle>{label}</CardTitle>
-              <CardDescription className="text-xs">
-                {task.type || "Strategy"} · {task.description || "No description"}
-              </CardDescription>
-            </div>
+    <CardContent className="flex flex-col gap-2 pt-0">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {activeExec?.type && (
+          <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+            {activeExec.type}
+          </span>
+        )}
+        {stepCount > 0 && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Layers className="size-3.5" />
+            {stepCount} step{stepCount !== 1 ? "s" : ""}
+          </span>
+        )}
+      </div>
+      <div className={cn("text-xs", isFailed ? "text-destructive/80" : "text-muted-foreground")}>
+        {date.label}: {formatDate(date.value as string)}
+      </div>
+    </CardContent>
+  )
+}
+
+function BotCard({
+  task,
+  selected,
+  onToggleSelect,
+}: {
+  task: Task
+  selected: boolean
+  onToggleSelect: (id: string) => void
+}) {
+  const label = task.name || `OctoBot ${task.id?.slice(0, 6) || "new"}`
+  const status = (getActiveExecution(task.executions)?.status || "scheduled") as TaskStatus
+
+  return (
+    <Card
+      className={cn(
+        "relative cursor-pointer transition-all hover:shadow-md",
+        selected
+          ? "ring-2 ring-primary shadow-md"
+          : "hover:ring-1 hover:ring-primary/40",
+      )}
+      onClick={() => task.id && onToggleSelect(task.id)}
+    >
+      {selected && (
+        <div className="absolute right-3 top-3 flex size-5 items-center justify-center rounded-full bg-primary">
+          <Check className="size-3 text-primary-foreground" />
+        </div>
+      )}
+      <CardHeader className="gap-1.5 pb-3">
+        <div className="flex items-start gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted">
+            <Bot className="size-5 text-muted-foreground" />
           </div>
-          <Badge variant={getStatusVariant(status)}>{statusLabels[status]}</Badge>
+          <div className="min-w-0 flex-1">
+            <div className="grid grid-cols-[1fr_auto] items-start gap-2">
+              <span className="truncate text-sm font-semibold leading-tight">{label}</span>
+              <Badge variant={getStatusVariant(status)} className={cn(selected && "mr-6")}>
+                {statusLabels[status]}
+              </Badge>
+            </div>
+            <span className="mt-0.5 block font-mono text-xs text-muted-foreground">
+              ID: {task.id?.slice(0, 12) || "—"}
+            </span>
+          </div>
         </div>
       </CardHeader>
-      <CardContent className="flex items-center justify-between text-sm text-muted-foreground">
-        <span>
-          {date.label}: {date.value}
-        </span>
-        <span>ID: {task.id?.slice(0, 8) || "—"}</span>
-      </CardContent>
+      <BotCardBody task={task} />
     </Card>
   )
 }
 
-function OctobotGrid({
+function BotGrid({
   tasks,
   filter,
   search,
+  selectedIds,
+  onToggleSelect,
 }: {
   tasks: Task[]
   filter: string
   search: string
+  selectedIds: Set<string>
+  onToggleSelect: (id: string) => void
 }) {
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase()
     return tasks.filter((task) => {
+      const activeExec = getActiveExecution(task.executions)
       const inFilter =
-        filter === "all" ? true : getStatusGroup(task.status) === filter
+        filter === "all" ? true : getStatusGroup(activeExec?.status) === filter
       const inSearch = query
-        ? `${task.name ?? ""} ${task.description ?? ""} ${task.type ?? ""}`
+        ? `${task.name ?? ""} ${activeExec?.type ?? ""}`
             .toLowerCase()
             .includes(query)
         : true
@@ -123,104 +244,343 @@ function OctobotGrid({
 
   if (tasks.length === 0) {
     return (
-      <Card className="border-dashed">
-        <CardHeader>
-          <CardTitle>No OctoBots yet</CardTitle>
-          <CardDescription>
-            Start your first OctoBot or import a saved configuration.
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+        <Bot className="size-10 text-muted-foreground/50" />
+        <div>
+          <p className="text-lg font-medium text-muted-foreground">No OctoBots yet</p>
+          <p className="mt-1 text-sm text-muted-foreground/70">Start your first OctoBot or import a saved configuration.</p>
+        </div>
+        <Button asChild size="lg">
+          <Link to="/octobots/new">
+            <Plus className="size-4" />
+            New OctoBot
+          </Link>
+        </Button>
+      </div>
     )
   }
 
   if (filtered.length === 0) {
     return (
-      <Card className="border-dashed">
-        <CardHeader>
-          <CardTitle>No OctoBots match this filter</CardTitle>
-          <CardDescription>Try another filter or search term.</CardDescription>
-        </CardHeader>
-      </Card>
+      <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+        <Bot className="size-10 text-muted-foreground/50" />
+        <div>
+          <p className="text-lg font-medium text-muted-foreground">No OctoBots match this filter</p>
+          <p className="mt-1 text-sm text-muted-foreground/70">Try another filter or search term.</p>
+        </div>
+        <Button asChild size="lg">
+          <Link to="/octobots/new">
+            <Plus className="size-4" />
+            New OctoBot
+          </Link>
+        </Button>
+      </div>
     )
   }
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
       {filtered.map((task) => (
-        <OctobotCard key={task.id} task={task} />
+        <BotCard
+          key={task.id}
+          task={task}
+          selected={task.id ? selectedIds.has(task.id) : false}
+          onToggleSelect={onToggleSelect}
+        />
       ))}
     </div>
   )
 }
 
-function OctobotsContent() {
+function SelectionToolbar({
+  selectedIds,
+  filteredTasks,
+  allTasks,
+  onSelectAll,
+  onDeselectAll,
+  onDeleted,
+}: {
+  selectedIds: Set<string>
+  filteredTasks: Task[]
+  allTasks: Task[]
+  onSelectAll: () => void
+  onDeselectAll: () => void
+  onDeleted: () => void
+}) {
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [shareLogsOpen, setShareLogsOpen] = useState(false)
+  const [shareLogsLoading, setShareLogsLoading] = useState(false)
+  const [shareCreds, setShareCreds] = useState<{ errorId: string; errorSecret: string } | null>(null)
+  const queryClient = useQueryClient()
+  const { showSuccessToast, showErrorToast } = useCustomToast()
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await Promise.all(
+        Array.from(selectedIds).map((id) => TasksService.deleteTask({ taskId: id }))
+      )
+    },
+    onSuccess: () => {
+      showSuccessToast(`Deleted ${selectedIds.size} OctoBot${selectedIds.size !== 1 ? "s" : ""}`)
+      setDeleteOpen(false)
+      onDeleted()
+      queryClient.invalidateQueries({ queryKey: ["tasks"] })
+    },
+    onError: () => {
+      showErrorToast("Some deletions failed")
+    },
+  })
+
+  const handleExportResults = () => {
+    const selected = allTasks.filter(
+      (t) => t.id && selectedIds.has(t.id) && getStatusGroup(getActiveExecution(t.executions)?.status) === "stopped"
+    )
+    if (selected.length === 0) {
+      showErrorToast("No results to export for selected OctoBots")
+      return
+    }
+    const headers = ["name", "status", "result", "result_metadata"]
+    const rows = selected.map((t) => {
+      const activeExec = getActiveExecution(t.executions)
+      let resultValue = activeExec?.result
+      try {
+        const parsed = activeExec?.result ? JSON.parse(activeExec.result) : null
+        resultValue = parsed !== null ? JSON.stringify(parsed) : activeExec?.result
+      } catch { /* raw string */ }
+      return [t.name || "", activeExec?.status || "", resultValue || "", activeExec?.result_metadata || ""]
+    })
+    const csv = generateCSV(headers, rows)
+    downloadCSV(csv, `task-results-${new Date().toISOString().split("T")[0]}`)
+    showSuccessToast(`Exported ${selected.length} result${selected.length !== 1 ? "s" : ""}`)
+  }
+
+  const handleShareLogs = async () => {
+    setShareLogsLoading(true)
+    try {
+      const username = localStorage.getItem("auth_username") || "node"
+      const password = localStorage.getItem("auth_password") || ""
+      const res = await fetch("/api/v1/logs/share", {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${btoa(`${username}:${password}`)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ automation_ids: Array.from(selectedIds) }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setShareCreds({ errorId: data.errorId, errorSecret: data.errorSecret })
+        setShareLogsOpen(true)
+      } else {
+        showErrorToast(data.error ?? "Failed to share logs")
+      }
+    } catch {
+      showErrorToast("Failed to share logs")
+    } finally {
+      setShareLogsLoading(false)
+    }
+  }
+
+  const allFilteredSelected = filteredTasks.every((t) => t.id && selectedIds.has(t.id))
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/50 px-4 py-2 text-sm">
+        <span className="font-medium">{selectedIds.size} selected</span>
+        <div className="flex gap-2">
+          {!allFilteredSelected && (
+            <Button variant="ghost" size="sm" onClick={onSelectAll}>
+              Select all
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onDeselectAll}>
+            Deselect all
+          </Button>
+        </div>
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportResults}>
+            Export results
+          </Button>
+          <LoadingButton variant="outline" size="sm" loading={shareLogsLoading} onClick={handleShareLogs}>
+            Share logs
+          </LoadingButton>
+          <Button variant="destructive" size="sm" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="size-3.5" />
+            Delete
+          </Button>
+        </div>
+      </div>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete {selectedIds.size} OctoBot{selectedIds.size !== 1 ? "s" : ""}</DialogTitle>
+            <DialogDescription>
+              This will permanently delete the selected OctoBots. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-4">
+            <DialogClose asChild>
+              <Button variant="outline" disabled={deleteMutation.isPending}>Cancel</Button>
+            </DialogClose>
+            <LoadingButton
+              variant="destructive"
+              loading={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate()}
+            >
+              Delete
+            </LoadingButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={shareLogsOpen} onOpenChange={setShareLogsOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Logs shared</DialogTitle>
+            <DialogDescription>
+              Share these credentials with the OctoBot team to help diagnose issues.
+            </DialogDescription>
+          </DialogHeader>
+          {shareCreds && (
+            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <span className="font-medium text-muted-foreground">Error ID</span>
+              <span className="select-all break-all font-mono text-xs">{shareCreds.errorId}</span>
+              <span className="font-medium text-muted-foreground">Error Secret</span>
+              <span className="select-all break-all font-mono text-xs">{shareCreds.errorSecret}</span>
+            </div>
+          )}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Close</Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+
+function BotsContent() {
   const { data: tasks } = useSuspenseQuery(getTasksQueryOptions())
-  const [filterValue, setFilterValue] = useState("all")
+  const [filterValue, setFilterValue] = useState("active")
   const [searchValue, setSearchValue] = useState("")
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  const filteredTasks = useMemo(() => {
+    const query = searchValue.trim().toLowerCase()
+    return tasks.filter((task) => {
+      const activeExec = getActiveExecution(task.executions)
+      const inFilter =
+        filterValue === "all" ? true : getStatusGroup(activeExec?.status) === filterValue
+      const inSearch = query
+        ? `${task.name ?? ""} ${activeExec?.type ?? ""}`
+            .toLowerCase()
+            .includes(query)
+        : true
+      return inFilter && inSearch
+    })
+  }, [tasks, filterValue, searchValue])
+
   const counts = useMemo(() => {
     return {
-      all: tasks.length,
-      running: tasks.filter((task) => getStatusGroup(task.status) === "running")
-        .length,
-      scheduled: tasks.filter(
-        (task) => getStatusGroup(task.status) === "scheduled"
-      ).length,
-      stopped: tasks.filter((task) => getStatusGroup(task.status) === "stopped")
-        .length,
-      terminated: tasks.filter(
-        (task) => getStatusGroup(task.status) === "terminated"
-      ).length,
+      active: tasks.filter((task) => getStatusGroup(getActiveExecution(task.executions)?.status) === "active").length,
+      stopped: tasks.filter((task) => getStatusGroup(getActiveExecution(task.executions)?.status) === "stopped").length,
     }
   }, [tasks])
 
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleSelectAll = () => {
+    setSelectedIds(new Set(filteredTasks.map((t) => t.id!).filter(Boolean)))
+  }
+
+  const handleDeselectAll = () => {
+    setSelectedIds(new Set())
+  }
+
   return (
-    <div className="flex flex-col gap-8">
-      <CollectionHeader
-        title="OctoBots"
-        description="Monitor running, scheduled, and stopped OctoBots."
-        action={
-          <div className="flex flex-wrap gap-2">
-            <Button asChild variant="outline" size="lg">
-              <Link to="/octobots/import">
-                <Download className="size-4" />
-                Import OctoBots
-              </Link>
-            </Button>
-            <Button asChild size="lg">
-              <Link to="/octobots/new">
-                <Plus className="size-4" />
-                Start new OctoBot
-              </Link>
-            </Button>
-          </div>
-        }
-        searchValue={searchValue}
-        onSearchChange={setSearchValue}
-        searchPlaceholder="Search OctoBots..."
-        filters={filters.map((filter) => ({
-          ...filter,
-          label: `${filter.label} (${counts[filter.value as keyof typeof counts]})`,
-        }))}
-        filterValue={filterValue}
-        onFilterChange={setFilterValue}
+    <div className="flex flex-col gap-6">
+      <div className="inline-flex items-center rounded-lg border p-0.5 self-start">
+        {filters.map((f) => {
+          const active = filterValue === f.value
+          return (
+            <button
+              key={f.value}
+              onClick={() => setFilterValue(f.value)}
+              className={cn(
+                "rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors",
+                active
+                  ? "bg-foreground text-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {f.label}
+              <span className={cn("ml-1.5 tabular-nums", active ? "text-background/70" : "text-muted-foreground/60")}>
+                {counts[f.value as keyof typeof counts]}
+              </span>
+            </button>
+          )
+        })}
+        <div className="mx-1 h-5 w-px bg-border" />
+        <div className="relative flex items-center">
+          <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
+          <input
+            value={searchValue}
+            onChange={(e) => setSearchValue(e.target.value)}
+            placeholder="Search..."
+            className="h-7 w-32 rounded-md bg-transparent pl-8 pr-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+          />
+          {searchValue && (
+            <button
+              onClick={() => setSearchValue("")}
+              className="absolute right-1.5 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          )}
+        </div>
+      </div>
+      {selectedIds.size > 0 && (
+        <SelectionToolbar
+          selectedIds={selectedIds}
+          filteredTasks={filteredTasks}
+          allTasks={tasks}
+          onSelectAll={handleSelectAll}
+          onDeselectAll={handleDeselectAll}
+          onDeleted={handleDeselectAll}
+        />
+      )}
+      <BotGrid
+        tasks={tasks}
+        filter={filterValue}
+        search={searchValue}
+        selectedIds={selectedIds}
+        onToggleSelect={handleToggleSelect}
       />
-      <OctobotGrid tasks={tasks} filter={filterValue} search={searchValue} />
     </div>
   )
 }
 
 export const Route = createFileRoute("/_layout/octobots/")({
-  component: OctobotsIndex,
+  component: BotsIndex,
   head: () => ({
     meta: [{ title: "OctoBots" }],
   }),
 })
 
-function OctobotsIndex() {
+function BotsIndex() {
   return (
     <Suspense fallback={<div>Loading OctoBots...</div>}>
-      <OctobotsContent />
+      <BotsContent />
     </Suspense>
   )
 }

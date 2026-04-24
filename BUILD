@@ -2,6 +2,11 @@ python_requirements(name="reqs")
 python_requirements(name="full_reqs", source="full_requirements.txt")
 python_requirements(name="dev_reqs", source="dev_requirements.txt")
 
+files(
+    name="cargo_workspace",
+    sources=["Cargo.toml", "Cargo.lock"],
+)
+
 python_sources(name="octobot", sources=["octobot/**/*.py"])
 
 files(
@@ -32,7 +37,9 @@ PACKAGE_SOURCES = [
     "packages/commons:octobot_commons",
     "packages/evaluators:octobot_evaluators",
     "packages/node:octobot_node",
+    "packages/flow:octobot_flow",
     "packages/services:octobot_services",
+    "packages/sync:octobot_sync",
     "packages/tentacles_manager:octobot_tentacles_manager",
     "packages/trading:octobot_trading",
     "packages/trading_backend:trading_backend",
@@ -43,6 +50,7 @@ PACKAGE_REQS = [
     "packages/commons:reqs",
     "packages/evaluators:reqs",
     "packages/node:reqs",
+    "packages/sync:reqs",
     "packages/tentacles_manager:reqs",
     "packages/trading:reqs",
     "packages/trading_backend:reqs",
@@ -51,6 +59,7 @@ PACKAGE_REQS = [
 PACKAGE_FULL_REQS = [
     "packages/commons:full_reqs",
     "packages/services:full_reqs",
+    "packages/sync:full_reqs",
     "packages/tentacles_manager:full_reqs",
     "packages/trading:full_reqs",
 ]
@@ -151,7 +160,7 @@ python_distribution(
     ] + PACKAGE_SOURCES + PACKAGE_REQS + PACKAGE_FULL_REQS,
     provides=python_artifact(
         name="octobot",
-        version="2.1.0",
+        version="2.1.1",
         url='https://github.com/Drakkar-Software/OctoBot',
         license='GPL-3.0',
         author="Drakkar-Software",

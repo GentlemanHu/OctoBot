@@ -32,7 +32,6 @@ from tests.scheduler import temp_dbos_scheduler
 def schedule_task():
     return octobot_node.models.Task(
         name="test_task",
-        description="Test task",
         content=json.dumps(
             {
                 "ACTIONS": "trade",
@@ -59,21 +58,19 @@ class TestTriggerTask:
         for task_type in octobot_node.models.TaskType:
             schedule_task.type = task_type.value
             with mock.patch.object(
-                temp_dbos_scheduler.BOT_WORKFLOW_QUEUE, "enqueue_async", mock.AsyncMock()
+                temp_dbos_scheduler.AUTOMATION_WORKFLOW_QUEUE, "enqueue_async", mock.AsyncMock()
             ) as mock_enqueue_async:
                 result = await octobot_node.scheduler.tasks.trigger_task(schedule_task)
                 assert result is True
                 mock_enqueue_async.assert_called_once()
                 call_kwargs = mock_enqueue_async.call_args[1]
-                assert "t" in call_kwargs
-                assert call_kwargs["t"].name.startswith(f"{schedule_task.name}_")
                 assert "inputs" in call_kwargs
+                assert len(call_kwargs["inputs"]) == 1
                 inputs = call_kwargs["inputs"]
                 assert inputs["task"] == schedule_task.model_dump(exclude_defaults=True)
-                assert inputs["delay"] == 1
-        with pytest.raises(ValueError, match="Invalid task type"):
+        with pytest.raises(ValueError, match="Unsupported task type"):
             with mock.patch.object(
-                temp_dbos_scheduler.BOT_WORKFLOW_QUEUE, "enqueue_async", mock.AsyncMock()
+                temp_dbos_scheduler.AUTOMATION_WORKFLOW_QUEUE, "enqueue_async", mock.AsyncMock()
             ) as mock_enqueue_async:
                 schedule_task.type = "invalid_type"
                 await octobot_node.scheduler.tasks.trigger_task(schedule_task)
