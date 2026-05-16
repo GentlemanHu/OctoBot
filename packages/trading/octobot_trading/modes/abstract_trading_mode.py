@@ -25,6 +25,9 @@ import octobot_commons.logging as logging
 import octobot_commons.tentacles_management as abstract_tentacle
 import octobot_commons.configuration
 import octobot_commons.signals as commons_signals
+import octobot_commons.dsl_interpreter as dsl_interpreter
+
+import octobot_evaluators.constants
 
 import async_channel.constants as channel_constants
 import async_channel.channels as channels
@@ -44,6 +47,9 @@ import octobot_trading.modes.mode_config as mode_config
 import octobot_trading.modes.modes_util as modes_util
 import octobot_trading.exchanges.util.exchange_util as exchange_util
 import octobot_trading.signals as signals
+
+if typing.TYPE_CHECKING:
+    import octobot.community
 
 
 class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
@@ -113,6 +119,11 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
         # When True, health check will be performed when calling trading_mode_trigger
         self.is_health_check_enabled: bool = False
         self._last_health_check_time: float = 0
+
+        # When True, the producer directly calls consumers instead of using channels.
+        # Awaiting the producer call completes after both producer and consumer work are done.
+        self.synchronous_execution: bool = False
+        self.previous_state: typing.Optional[dict] = None
 
         # Pending bot logs to be inserted after execution
         self.pending_bot_logs: list["octobot.community.BotLogData"] = []
@@ -232,10 +243,16 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
         """
         return True
 
-    async def initialize(self, trading_config=None, auto_start=True) -> None:
+    async def initialize(
+        self,
+        trading_config: typing.Optional[dict] = None,
+        auto_start: bool = True,
+        previous_state: typing.Optional[dict] = None
+    ) -> None:
         """
         Triggers producers and consumers creation
         """
+        self.previous_state = previous_state
         await self.reload_config(self.exchange_manager.bot_id, trading_config=trading_config)
         self.producers = await self.create_producers(auto_start)
         self.consumers = await self.create_consumers()
@@ -329,7 +346,7 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
         self.logger.debug(f"Received {action} command")
         if action == common_enums.UserCommands.MANUAL_TRIGGER.value:
             self.logger.debug(f"Triggering trading mode from {action} command with data: {data}")
-            await self._manual_trigger(data)
+            await self.manual_trigger(data)
         if action == common_enums.UserCommands.RELOAD_CONFIG.value:
             await self.reload_config(bot_id)
             self.logger.debug("Reloaded configuration")
@@ -344,13 +361,26 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
             if self.SUPPORTS_HEALTH_CHECK:
                 await self.health_check([], {})
 
-    async def _manual_trigger(self, data):
+    async def manual_trigger(self, data) -> None:
         kwargs = {
             "trigger_source": common_enums.TriggerSource.MANUAL.value
         }
         kwargs.update(data.get("kwargs", {}))
         for producer in self.producers:
             await producer.trigger(**kwargs)
+
+    @classmethod
+    def get_dsl_dependencies(cls, trading_config: dict, config: dict, previous_state: typing.Optional[dict]) -> list[dsl_interpreter.InterpreterDependency]:
+        """
+        Overwrite in subclasses if necessary
+        :param trading_config: The trading config
+        :param config: The global config
+        :return: The list of dependencies for the DSL interpreter
+        """
+        return []
+
+    def get_dsl_state(self) -> dict:
+        return {}
 
     def enabled_health_check_in_config(self) -> bool:
         try:
@@ -597,6 +627,16 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
             common_constants.DEFAULT_IGNORED_VALUE
         )
 
+    def get_time_before_next_execution(self) -> float:
+        time_frame = (
+            self.trading_config.get(octobot_evaluators.constants.STRATEGIES_REQUIRED_TIME_FRAME)
+            or common_enums.TimeFrames.ONE_HOUR.value
+        )
+        return (
+            common_enums.TimeFramesMinutes[common_enums.TimeFrames(time_frame)]
+            * common_constants.MINUTE_TO_SECONDS
+        )
+
     def ensure_supported(self, symbol):
         if self.exchange_manager.is_future:
             try:
@@ -614,12 +654,14 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
     async def create_order(
         self, order, loaded: bool = False, params: typing.Optional[dict] = None,
         wait_for_creation=True, creation_timeout=constants.INDIVIDUAL_ORDER_SYNC_TIMEOUT,
+        raise_all_creation_error=False,
         dependencies: typing.Optional[commons_signals.SignalDependencies] = None
     ):
         return await signals.create_order(
             self.exchange_manager, self.should_emit_trading_signal(), order,
             loaded=loaded, params=params,
             wait_for_creation=wait_for_creation, creation_timeout=creation_timeout,
+            raise_all_creation_error=raise_all_creation_error,
             dependencies=dependencies
         )
 

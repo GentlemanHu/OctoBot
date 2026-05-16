@@ -70,12 +70,7 @@ DEFAULT_ARTIFACT_METADATA_AUTHOR = "DrakkarSoftware"
 TENTACLE_REQUIREMENT_VERSION_EQUALS = "=="
 
 # Tentacle user config files and folders
-USER_REFERENCE_TENTACLE_CONFIG_PATH = path.join(constants.USER_FOLDER, "reference_tentacles_config")
-USER_REFERENCE_TENTACLE_CONFIG_FILE_PATH = path.join(USER_REFERENCE_TENTACLE_CONFIG_PATH,
-                                                     constants.CONFIG_TENTACLES_FILE)
 TENTACLES_SPECIFIC_CONFIG_FOLDER = "specific_config"
-USER_REFERENCE_TENTACLE_SPECIFIC_CONFIG_PATH = path.join(USER_REFERENCE_TENTACLE_CONFIG_PATH,
-                                                         TENTACLES_SPECIFIC_CONFIG_FOLDER)
 
 # Current minimum default tentacles version
 TENTACLE_CURRENT_MINIMUM_DEFAULT_TENTACLES_VERSION = "1.2.0"
@@ -244,6 +239,25 @@ TENTACLE_TYPES = [
 IGNORED_TENTACLES_NAMES_IN_TENTACLES_SETUP_CONFIG = [
     "Automation", # special case for the automation tentacle config: it's storing all automations config under the same name: Automation (it's not a normal tentacle class name)
 ]
+
+# Tentacle package signing
+SIGNATURE_FILE_EXTENSION = ".signature"
+MAX_SIGNATURE_FILE_SIZE = 1024  # ECDSA P-256 signatures are ~96 bytes base64-encoded
+ENV_TENTACLES_SIGNING_PRIVATE_KEY = "TENTACLES_SIGNING_PRIVATE_KEY"
+# When true, tentacle packages can be installed without a valid signature.
+# By default, all downloaded tentacles require signature verification.
+ALLOW_UNSIGNED_TENTACLES = constants.parse_boolean_environment_var("ALLOW_UNSIGNED_TENTACLES", "false")
+# Drakkar-Software official ECDSA public key (SECP256R1) used to verify tentacle package signatures.
+# The corresponding private key is held server-side and used during package export/upload.
+# Generate with:
+#   openssl ecparam -name secp256r1 -genkey -out private_key.pem
+#   openssl ec -in private_key.pem -pubout -out public_key.pem
+DRAKKAR_OFFICIAL_PUBLIC_KEY_PEM = (
+    b"-----BEGIN PUBLIC KEY-----\n"
+    b"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAELAbkbO8T80fYWFSsN3l6wNJ1Y3e8\n"
+    b"PAK1019sqNRbRKENK6Whsfo0YKvAP8XksXGZVWgwYv9CM3/DFWbnWDfrVg==\n"
+    b"-----END PUBLIC KEY-----\n"
+)
 
 # compiled tentacles paths
 PLATFORM_TO_DOWNLOAD_PATH = {

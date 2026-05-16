@@ -23,6 +23,7 @@ import asyncio
 import octobot_trading.exchanges as exchanges
 import octobot_trading.exchange_channel as exchanges_channel
 import octobot_trading.constants as constants
+import octobot_trading.personal_data.portfolios.portfolio_util as portfolio_util
 
 
 class BalanceProducer(exchanges_channel.ExchangeChannelProducer):
@@ -48,8 +49,8 @@ class BalanceProducer(exchanges_channel.ExchangeChannelProducer):
                 "balance": balance
             })
 
-    async def refresh_real_trader_portfolio(self, force_manual_refresh=False) -> bool:
-        if self.channel.exchange_manager.is_simulated:
+    async def refresh_real_trader_portfolio(self, force_manual_refresh: bool = False) -> bool:
+        if self.channel.exchange_manager.is_simulated or self.channel.exchange_manager.is_backtesting:
             # simulated portfolio can't be out of sync
             await self.channel.exchange_manager.exchange_personal_data.resolve_pending_portfolio_update_events()
             return True
@@ -69,9 +70,15 @@ class BalanceProducer(exchanges_channel.ExchangeChannelProducer):
         :param should_notify: if Orders channel consumers should be notified
         :return: True if the portfolio was updated
         """
+        # todo subportfolio update this when subportfolio is implemented
         balance = await self.channel.exchange_manager.exchange.get_balance()
+        non_empty_balance = portfolio_util.filter_empty_values(balance)
+        self.logger.info(
+            "Refreshed portfolio, new balance: %s",
+            portfolio_util.get_balance_summary(non_empty_balance, use_exchange_format=True)
+        )
         return await self.channel.exchange_manager.exchange_personal_data.handle_portfolio_update(
-            balance=balance, should_notify=should_notify, is_diff_update=False
+            balance=non_empty_balance, should_notify=should_notify, is_diff_update=False
         )
 
     async def start_expected_portfolio_update_checker(self) -> bool:
@@ -95,7 +102,7 @@ class BalanceChannel(exchanges_channel.ExchangeChannel):
     CONSUMER_CLASS = exchanges_channel.ExchangeChannelConsumer
 
 
-class BalanceProfitabilityProducer(exchanges_channel.ExchangeChannelProducer):
+class BalanceProfitabilityProducer(exchanges_channel.IndirectExchangeChannelProducer):
     async def push(self, balance, mark_price):
         await self.perform(balance, mark_price)
 

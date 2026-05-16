@@ -1,21 +1,95 @@
 import contextlib
+import decimal
 import mock
 import pytest
 import time
 import os
 import typing
+import json
 
 # force env var
 os.environ["USE_MINIMAL_LIBS"] = "true"
 os.environ["ALLOW_FUNDS_TRANSFER"] = "True"
 
+import ccxt.async_support as ccxt_async
 import octobot_trading.exchanges.connectors.ccxt.ccxt_clients_cache as ccxt_clients_cache
 import octobot.community as community
 
-import octobot_flow.entities
+import octobot_protocol.models as protocol_models
 
+import octobot_copy.constants as copy_constants
+import octobot_copy.entities as copy_entities
+
+import octobot_flow.entities
+import octobot_flow.jobs
 import octobot_flow.environment
 import octobot_flow.repositories.community
+import octobot_flow.logic.actions.actions_factory as actions_factory
+
+AUTHENTICATED_TEST_GROUP = "authenticated_xdist_group"
+
+# Passed as copy_exchange_account(strategy_id=...) in functional DSL so copy-trading dependencies resolve.
+FUNCTIONAL_TEST_COPY_STRATEGY_ID = "functional_test_copy_strategy"
+
+
+def d_order_price(value: typing.Union[int, float, decimal.Decimal]) -> decimal.Decimal:
+    """Exact decimal view of a stored order price (avoids float + int mix in assertions)."""
+    if isinstance(value, decimal.Decimal):
+        return value
+    return decimal.Decimal(str(value))
+
+
+def set_emit_signals_metadata(automation_state: dict, emit_signals: bool) -> None:
+    automation_state["automation"]["metadata"]["emit_signals"] = emit_signals
+
+
+@contextlib.contextmanager
+def trading_signal_emission_patches(emit_signals: bool, *, mock_authenticator: bool = True):
+    with contextlib.ExitStack() as stack:
+        insert_mock = stack.enter_context(
+            mock.patch.object(
+                octobot_flow.repositories.community.TradingSignalsRepository,
+                "insert_trading_signal",
+                mock.AsyncMock(),
+            )
+        )
+        if emit_signals and mock_authenticator:
+
+            @contextlib.asynccontextmanager
+            async def _fake_maybe_authenticator(self):
+                yield mock.MagicMock()
+
+            stack.enter_context(
+                mock.patch.object(
+                    octobot_flow.jobs.AutomationJob,
+                    "_maybe_authenticator",
+                    _fake_maybe_authenticator,
+                )
+            )
+        yield insert_mock
+
+
+def assert_emitted_signal_account_allocation_ratios(
+    copied_account: protocol_models.CopiedAccount,
+    *,
+    allow_zero_ratio_assets: frozenset[str] = frozenset(),
+    allow_negligible_ratio_assets: frozenset[str] = frozenset(),
+) -> None:
+    """Allocation checks for ``TradingSignal.account.copied_assets`` from ``insert_trading_signal`` only."""
+    total_value = decimal.Decimal(0)
+    for asset in copied_account.copied_assets or []:
+        ratio = decimal.Decimal(str(asset.ratio))
+        total_value += ratio
+        ratio_float = float(ratio)
+        name = asset.name
+        if name in allow_zero_ratio_assets:
+            assert ratio_float == pytest.approx(0.0, abs=1e-18)
+        elif name in allow_negligible_ratio_assets:
+            assert ratio_float < 0.05, f"{name} expected negligible ratio, got {ratio_float}"
+        else:
+            assert ratio_float > 0, f"{name} ratio should be > 0, got {ratio_float}"
+    assert float(total_value) == pytest.approx(1.0, abs=1e-3)
+
 
 def is_on_github_ci():
     # Always set to true when GitHub Actions is running the workflow.
@@ -25,6 +99,20 @@ def is_on_github_ci():
 
 current_time = time.time()
 EXCHANGE_INTERNAL_NAME = "binanceus" if is_on_github_ci() else "binance" # binanceus works on github CI
+
+
+async def fetch_last_price(symbol: str) -> float:
+    exchange_class = getattr(ccxt_async, EXCHANGE_INTERNAL_NAME)
+    exchange = exchange_class({})
+    try:
+        ticker = await exchange.fetch_ticker(symbol)
+    finally:
+        await exchange.close()
+    last = ticker.get("last") or ticker.get("close")
+    if last is None:
+        raise AssertionError(f"{symbol} ticker has no last or close price")
+    return float(last)
+
 
 @contextlib.contextmanager
 def mocked_community_authentication():
@@ -102,7 +190,7 @@ def global_state():
                 "metadata": {
                     "automation_id": "automation_1",
                 },
-                "client_exchange_account_elements": {
+                "exchange_account_elements": {
                     "portfolio": {
                         "content": {
                             "USDT": {
@@ -168,7 +256,7 @@ def btc_usdc_global_state():
             "metadata": {
                 "automation_id": "automation_1",
             },
-            "client_exchange_account_elements": {
+            "exchange_account_elements": {
                     "portfolio": {
                         "content": {
                             "USDC": {
@@ -239,22 +327,47 @@ def actions_with_cancel_limit_orders():
     ]
 
 
+def copy_exchange_account_action(
+    reference_market: str,
+    reference_account: protocol_models.CopiedAccount,
+    account_copy_settings: typing.Optional[copy_entities.AccountCopySettings] = None,
+    strategy_id: str = FUNCTIONAL_TEST_COPY_STRATEGY_ID,
+) -> dict:
+    return {
+        "id": "action_copy_exchange_account",
+        "dsl_script": actions_factory.create_copy_exchange_account_action(
+            strategy_id, reference_market, reference_account, account_copy_settings
+        ).dsl_script,
+    }
+
+
+def empty_copy_exchange_account_action(
+    strategy_id: str = FUNCTIONAL_TEST_COPY_STRATEGY_ID,
+) -> dict:
+    """Copy action with empty reference fields until a trading signal fills the DSL (refresh_required)."""
+    return {
+        "id": "action_copy_exchange_account",
+        "dsl_script": (
+            f"copy_exchange_account(strategy_id={json.dumps(strategy_id)}, reference_market='', reference_account='')"
+        ),
+    }
+
+
 @pytest.fixture
 def isolated_exchange_cache():
     with ccxt_clients_cache.isolated_empty_cache():
         yield
 
 
-def automation_state_dict(resolved_actions: list[octobot_flow.entities.AbstractActionDetails]) -> dict[str, typing.Any]:
+def automation_state_dict(
+    resolved_actions: list[octobot_flow.entities.AbstractActionDetails],
+) -> dict[str, typing.Any]:
     return {
         "automation": {
             "metadata": {"automation_id": "automation_1"},
             "actions_dag": {"actions": resolved_actions}
         }
     }
-
-
-automations_state_dict = automation_state_dict  # alias for backward compatibility
 
 
 def resolved_actions(actions: list[dict[str, typing.Any]]) -> list[octobot_flow.entities.AbstractActionDetails]:

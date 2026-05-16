@@ -21,6 +21,7 @@ import octobot_commons.constants as commons_constants
 import octobot_services.constants as services_constants
 import octobot_services.services as services
 import octobot_node.scheduler
+import octobot_node.scheduler.internal_trading_signals as internal_trading_signals
 
 
 LOCAL_HOST_IP = "127.0.0.1"
@@ -32,8 +33,6 @@ class NodeApiService(services.AbstractService):
     def __init__(self):
         super().__init__()
         self.api_app = None
-        self.admin_username = None
-        self.admin_password = None
         self.node_api_url = None
         self.node_sqlite_file = None
         self.node_redis_url = None
@@ -42,8 +41,6 @@ class NodeApiService(services.AbstractService):
     def get_fields_description(self):
         return {
             services_constants.CONFIG_NODE_API_PORT: "Port to access the OctoBot Node API interface from.",
-            services_constants.ADMIN_USERNAME: "Admin username (email format) for Node API basic authentication.",
-            services_constants.ADMIN_PASSWORD: "Admin password for Node API basic authentication.",
             services_constants.NODE_API_URL: "Base URL used by the Node Web UI to reach the Node API.",
             services_constants.NODE_SQLITE_FILE: "SQLite database file path for the Node scheduler.",
             services_constants.NODE_REDIS_URL: "Redis URI for the Node scheduler (optional).",
@@ -54,8 +51,6 @@ class NodeApiService(services.AbstractService):
     def get_default_value(self):
         return {
             services_constants.CONFIG_NODE_API_PORT: services_constants.DEFAULT_NODE_API_PORT,
-            services_constants.ADMIN_USERNAME: "admin@example.com",
-            services_constants.ADMIN_PASSWORD: "changethis",
             services_constants.NODE_API_URL: self._get_default_node_api_url(),
             services_constants.NODE_SQLITE_FILE: "tasks.db",
             services_constants.NODE_REDIS_URL: None,
@@ -75,7 +70,10 @@ class NodeApiService(services.AbstractService):
 
     @staticmethod
     def get_is_enabled(config):
-        # allow to disable node api interface from config, enabled by default otherwise
+        if os.getenv(services_constants.ENV_ENABLE_NODE_API):
+            return commons_constants.parse_boolean_environment_var(
+                services_constants.ENV_ENABLE_NODE_API, "false"
+            )
         return config.get(services_constants.CONFIG_CATEGORY_SERVICES, {}).get(services_constants.CONFIG_NODE_API, {}).get(
             commons_constants.CONFIG_ENABLED_OPTION, False
         )
@@ -100,15 +98,11 @@ class NodeApiService(services.AbstractService):
     async def prepare(self) -> None:
         try:
             node_config = self.config[services_constants.CONFIG_CATEGORY_SERVICES][services_constants.CONFIG_NODE_API]
-            self.admin_username = node_config.get(services_constants.ADMIN_USERNAME)
-            self.admin_password = node_config.get(services_constants.ADMIN_PASSWORD)
             self.node_api_url = node_config.get(services_constants.NODE_API_URL)
             self.node_sqlite_file = node_config.get(services_constants.NODE_SQLITE_FILE)
             self.node_redis_url = node_config.get(services_constants.NODE_REDIS_URL)
             self.backend_cors_origins = node_config.get(services_constants.BACKEND_CORS_ALLOWED_ORIGINS)
         except KeyError:
-            self.admin_username = None
-            self.admin_password = None
             self.node_api_url = None
             self.node_sqlite_file = None
             self.node_redis_url = None
@@ -116,16 +110,11 @@ class NodeApiService(services.AbstractService):
         self._sync_config()
         if self.get_is_enabled(self.config) and not octobot_node.scheduler.is_initialized():
             octobot_node.scheduler.initialize_scheduler()
+            await internal_trading_signals.subscribe_internal_trading_signal_consumer()
 
     def _sync_config(self):
         defaults = self.get_default_value()
         updated_config = {}
-        if not self.admin_username:
-            self.admin_username = defaults[services_constants.ADMIN_USERNAME]
-            updated_config[services_constants.ADMIN_USERNAME] = self.admin_username
-        if not self.admin_password:
-            self.admin_password = defaults[services_constants.ADMIN_PASSWORD]
-            updated_config[services_constants.ADMIN_PASSWORD] = self.admin_password
         if not self.node_api_url:
             self.node_api_url = defaults[services_constants.NODE_API_URL]
             updated_config[services_constants.NODE_API_URL] = self.node_api_url
@@ -175,12 +164,6 @@ class NodeApiService(services.AbstractService):
 
     def get_bind_port(self):
         return int(self._get_node_api_server_port())
-
-    def get_admin_username(self):
-        return os.getenv(services_constants.ENV_ADMIN_USERNAME, self.admin_username)
-
-    def get_admin_password(self):
-        return os.getenv(services_constants.ENV_ADMIN_PASSWORD, self.admin_password)
 
     def get_node_api_url(self):
         return self.node_api_url or self._get_default_node_api_url()

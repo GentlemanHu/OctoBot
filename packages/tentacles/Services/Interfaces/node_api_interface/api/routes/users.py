@@ -19,14 +19,15 @@ from fastapi import APIRouter
 
 import octobot_node.models
 
-# Import from tentacles package (runtime) or fallback to direct imports (build)
+# Prefer the installed tentacles package (production target); fall back to
+# direct imports when running from source (build time, tests).
 try:
-    from tentacles.Services.Interfaces.node_api_interface.api.deps import CurrentUser
+    from tentacles.Services.Interfaces.node_api_interface.api.deps import OptionalCurrentUser
 except ImportError:
-    from api.deps import CurrentUser
+    from api.deps import OptionalCurrentUser  # type: ignore[no-redef]
 
 router = APIRouter(tags=["users"])
 
-@router.get("/me", response_model=octobot_node.models.User)
-def read_user_me(current_user: CurrentUser) -> typing.Any:
+@router.get("/me", response_model=typing.Optional[octobot_node.models.User])
+def read_user_me(current_user: OptionalCurrentUser) -> typing.Any:
     return current_user

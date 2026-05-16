@@ -23,6 +23,7 @@ import octobot_commons.enums as commons_enums
 import octobot_commons.constants as commons_constants
 import octobot_commons.evaluators_util as evaluators_util
 import octobot_commons.signals as commons_signals
+import octobot_commons.logging as logging
 
 import octobot_evaluators.api as evaluators_api
 import octobot_evaluators.constants as evaluators_constants
@@ -274,7 +275,9 @@ class DCATradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
                         if is_cancelled:
                             next_step_dependencies.extend(new_dependencies)
                     except trading_errors.UnexpectedExchangeSideOrderStateError as err:
-                        self.logger.warning(f"Skipped order cancel: {err}, order: {order}")
+                        self.logger.warning(
+                            f"Skipped order cancel: {err}, order: {logging.get_private_minimized_message_if_necessary(order)}"
+                        )
             else:
                 self.logger.info(
                     f"Skipping {self.exchange_manager.exchange_name} {symbol} entry order cancel as new "
@@ -1098,7 +1101,7 @@ class DCATradingMode(trading_modes.AbstractTradingMode):
         sellable_assets = sorted(list(set(sellable_assets + traded_coins)))
         self.logger.info(f"Optimizing portfolio: selling {sellable_assets} to buy {target_asset}")
         return await trading_modes.convert_assets_to_target_asset(
-            self, sellable_assets, target_asset, tickers
+            sellable_assets, target_asset, tickers, trading_mode=self,
         )
 
     async def single_exchange_process_health_check(self, chained_orders: list, tickers: dict) -> list:
@@ -1119,7 +1122,7 @@ class DCATradingMode(trading_modes.AbstractTradingMode):
             )
             try:
                 asset_orders = await trading_modes.convert_asset_to_target_asset(
-                    self, asset, common_quote, tickers, asset_amount=amount
+                    asset, common_quote, tickers, asset_amount=amount, trading_mode=self,
                 )
                 if not asset_orders:
                     self.logger.info(
@@ -1133,12 +1136,8 @@ class DCATradingMode(trading_modes.AbstractTradingMode):
                     err, True, f"Error when creating order to sell {asset} into {common_quote}: {err}"
                 )
         if created_orders:
-            await asyncio.gather(
-                *[
-                    trading_personal_data.wait_for_order_fill(
-                        order, self.HEALTH_CHECK_FILL_ORDERS_TIMEOUT, True
-                    ) for order in created_orders
-                ]
+            await trading_personal_data.wait_for_orders_to_fill_considering_order_auto_synchronization(
+                self.exchange_manager, created_orders, self.HEALTH_CHECK_FILL_ORDERS_TIMEOUT, True
             )
             for producer in self.producers:
                 producer.last_activity = trading_modes.TradingModeActivity(

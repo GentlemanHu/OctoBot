@@ -46,6 +46,8 @@ CONFIG_ENABLED_OPTION = "enabled"
 CONFIG_DEBUG_OPTION = "DEV-MODE"
 CONFIG_TIME_FRAME = "time_frame"
 USER_FOLDER = "user"
+AUTOMATIONS_FOLDER = "automations"
+USER_AUTOMATIONS_FOLDER = f"{USER_FOLDER}/{AUTOMATIONS_FOLDER}"
 CONFIG_FOLDER = "config"
 CONFIG_FILE = "config.json"
 SAFE_DUMP_SUFFIX = ".back"
@@ -54,6 +56,8 @@ DEFAULT_CONFIG_FILE_PATH = f"{CONFIG_FOLDER}/{DEFAULT_CONFIG_FILE}"
 SCHEMA = "schema"
 CONFIG_FILE_EXT = ".json"
 CONFIG_FILE_SCHEMA = f"{CONFIG_FOLDER}/config_{SCHEMA}.json"
+CONFIG_SYNC = "sync"
+CONFIG_SYNC_ENCRYPTION_SECRET = "encryption_secret"
 CONFIG_REFRESH_RATE = "refresh_rate_seconds"
 CONFIG_SAVED_HISTORICAL_TIMEFRAMES = "saved_historical_timeframes"
 CONFIG_OPTIMIZER_ID = "optimizer_id"
@@ -251,10 +255,15 @@ FORCE_BACKTESTING_LOGS = parse_boolean_environment_var(
 BASE_OPERATORS_LIBRARY = "base"
 CONTEXTUAL_OPERATORS_LIBRARY = "contextual"
 UNRESOLVED_PARAMETER_PLACEHOLDER = "UNRESOLVED_PARAMETER"
+LOCAL_VALUE_PLACEHOLDER = "LOCAL_VALUE_PLACEHOLDER"
 
 # Logging
 EXCEPTION_DESC = "exception_desc"
 IS_EXCEPTION_DESC = "is_exception_desc"
+ALLOW_PRIVATE_DATA_LOGS = parse_boolean_environment_var("ALLOW_PRIVATE_DATA_LOGS", "true")
+PRIVATE_MESSAGE_PLACEHOLDER = "***"
+PRIVATE_MESSAGE_ALLOWED_CHARS_COUNT = 3
+
 
 # from https://www.coingecko.com/en/categories/stablecoins
 USD_LIKE_COINS = [
@@ -296,4 +305,5 @@ KNOWN_POTENTIALLY_SSL_FAILED_REQUIRED_URL = (
     "https://tentacles.octobot.online/officials/packages/full/base/1.0.9/metadata.yaml"
 )
 IS_DEV_MODE_ENABLED = parse_boolean_environment_var(CONFIG_DEBUG_OPTION, "False")
-USE_MINIMAL_LIBS = parse_boolean_environment_var("USE_MINIMAL_LIBS", "false")
+ENV_USE_MINIMAL_LIBS = "USE_MINIMAL_LIBS"
+USE_MINIMAL_LIBS = parse_boolean_environment_var(ENV_USE_MINIMAL_LIBS, "false")

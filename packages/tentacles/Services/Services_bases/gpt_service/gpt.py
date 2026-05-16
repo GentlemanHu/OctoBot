@@ -47,6 +47,9 @@ import octobot_commons.configuration.fields_utils as fields_utils
 import octobot.constants as constants
 import octobot.community as community
 
+from tentacles.Services.Services_bases.gpt_service import provider_adapters
+from tentacles.Services.Services_bases.gpt_service import rpm_limiter as rpm_limiter_module
+
 
 NO_SYSTEM_PROMPT_MODELS = [
     "o1-mini",
@@ -179,7 +182,7 @@ class LLMService(services.AbstractAIService):
         self.last_consumed_token_date: typing.Optional[datetime.date] = None
         
         self._client: typing.Optional[openai.AsyncOpenAI] = None
-        
+
         # MCP discovered tools cache
         self._mcp_tools: list[dict] = []
         self._mcp_clients: list[typing.Any] = []
@@ -187,6 +190,20 @@ class LLMService(services.AbstractAIService):
 
         self.ai_provider = enums.AIProvider.OPENAI
         self._tool_call_json_output: bool = True
+        self._rpm_limiter: typing.Optional[rpm_limiter_module.RPMLimiter] = None
+
+        if self._env_secret_key is None and self._env_base_url is None:
+            result = provider_adapters.auto_configure(self.DEFAULT_MODEL, bool(env_model))
+            if result is not None:
+                self._env_secret_key = result.api_key
+                self._env_base_url = result.base_url
+                self.ai_provider = result.provider
+                if result.model is not None:
+                    self.model = result.model
+                if result.rpm_limit is not None:
+                    self._rpm_limiter = rpm_limiter_module.RPMLimiter(
+                        result.rpm_limit, name=result.provider.value
+                    )
 
     def get_ai_provider_name(self) -> str:
         return self.ai_provider.value if self.ai_provider else enums.AIProvider.OPENAI.value
@@ -1011,6 +1028,8 @@ class LLMService(services.AbstractAIService):
                 response_schema=response_schema,
             )
 
+            if self._rpm_limiter is not None:
+                await self._rpm_limiter.acquire()
             completions = await self._get_client().chat.completions.create(**api_kwargs)
             return self._process_chat_completion_response(completions, model)
         except (
@@ -1447,6 +1466,8 @@ class LLMService(services.AbstractAIService):
             if reasoning_effort and reasoning_effort in REASONING_EFFORT_VALUES:
                 responses_kwargs["reasoning"] = {"effort": reasoning_effort}
             
+            if self._rpm_limiter is not None:
+                await self._rpm_limiter.acquire()
             response = await self._get_client().responses.create(**responses_kwargs)
             return self._extract_responses_api_result(response, model)
             
@@ -1632,6 +1653,8 @@ class LLMService(services.AbstractAIService):
                 pass
         if key and not fields_utils.has_invalid_default_config_value(key):
             return key
+        if self._env_secret_key:
+            return self._env_secret_key
         if self._get_base_url():
             # no key and custom base url: use random key
             return uuid.uuid4().hex
@@ -1662,6 +1685,8 @@ class LLMService(services.AbstractAIService):
 
             if self._get_base_url():
                 self.logger.debug(f"Using custom LLM url: {self._get_base_url()}")
+            if self._rpm_limiter is not None:
+                await self._rpm_limiter.acquire()
             fetched_models = await self._get_client().models.list()
             if fetched_models.data:
                 self.logger.debug(f"Fetched {len(fetched_models.data)} models")

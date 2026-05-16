@@ -2,7 +2,7 @@ import pytest
 
 import octobot_commons.constants as common_constants
 
-import octobot_flow
+import octobot_flow.jobs
 import octobot_flow.entities
 import octobot_flow.enums
 
@@ -20,7 +20,7 @@ def init_action():
                 "metadata": {
                     "automation_id": "automation_1",
                 },
-                "client_exchange_account_elements": {
+                "exchange_account_elements": {
                     "portfolio": {
                         "content": {
                             "USDT": {
@@ -49,13 +49,15 @@ def init_action():
 
 @pytest.mark.asyncio
 async def test_start_with_empty_state_and_reschedule_no_community_auth(init_action: dict):
+    expected_config_action_result = {"config_applied": True, "source": "initialization"}
+    init_action["result"] = expected_config_action_result
     all_actions = [init_action]
     with (
         functionnal_tests.mocked_community_authentication() as login_mock,
         functionnal_tests.mocked_community_repository() as insert_bot_logs_mock,
     ):
         automation_state = automation_state_dict(resolved_actions(all_actions))
-        async with octobot_flow.AutomationJob(automation_state, [], {}) as automation_job:
+        async with octobot_flow.jobs.AutomationJob(automation_state, [], [], {}) as automation_job:
             await automation_job.run()
 
         # check bot actions execution
@@ -64,7 +66,7 @@ async def test_start_with_empty_state_and_reschedule_no_community_auth(init_acti
             assert isinstance(action, octobot_flow.entities.AbstractActionDetails)
             assert action.error_status == octobot_flow.enums.ActionErrorStatus.NO_ERROR.value
             assert action.executed_at and action.executed_at >= current_time
-            assert action.result is None
+            assert action.result == expected_config_action_result
 
         after_execution_dump = automation_job.dump()
         exchange_account_details = after_execution_dump["exchange_account_details"]
@@ -80,7 +82,7 @@ async def test_start_with_empty_state_and_reschedule_no_community_auth(init_acti
         assert portfolio["content"] == []
         assert portfolio["unit"] == ""
         # assert automation portfolio
-        portfolio_content = after_execution_dump["automation"]["client_exchange_account_elements"]["portfolio"]["content"]
+        portfolio_content = after_execution_dump["automation"]["exchange_account_elements"]["portfolio"]["content"]
         assert portfolio_content == {
             "USDT": {
                 "available": 1000.0,
@@ -112,7 +114,7 @@ async def test_start_with_empty_state_action_followed_by_market_orders_no_commun
     ):
         # 1. initialize bot with configuration
         automation_state = automation_state_dict(resolved_actions(init_actions))
-        async with octobot_flow.AutomationJob(automation_state, [], {}) as init_automation_job:
+        async with octobot_flow.jobs.AutomationJob(automation_state, [], [], {}) as init_automation_job:
             await init_automation_job.run()
         # check actions execution
         assert len(init_automation_job.automation_state.automation.actions_dag.actions) == len(init_actions)
@@ -122,7 +124,7 @@ async def test_start_with_empty_state_action_followed_by_market_orders_no_commun
             assert action.result is None
         # check portfolio content
         after_config_execution_dump = init_automation_job.dump()
-        assert after_config_execution_dump["automation"]["client_exchange_account_elements"]["portfolio"]["content"] == {
+        assert after_config_execution_dump["automation"]["exchange_account_elements"]["portfolio"]["content"] == {
             "USDT": {
                 "available": 1000.0,
                 "total": 1000.0,
@@ -139,8 +141,8 @@ async def test_start_with_empty_state_action_followed_by_market_orders_no_commun
         # 2. second call: execute received market orders bot actions
         state = after_config_execution_dump
         other_actions = resolved_actions(actions_with_market_orders)
-        async with octobot_flow.AutomationJob(state, [], {}) as automation_job:
-            automation_job.automation_state.update_automation_actions(
+        async with octobot_flow.jobs.AutomationJob(state, [], [], {}) as automation_job:
+            automation_job.automation_state.upsert_automation_actions(
                 other_actions
             )
             await automation_job.run()
@@ -162,7 +164,7 @@ async def test_start_with_empty_state_action_followed_by_market_orders_no_commun
                 assert created_order["type"] == "market"
 
         after_execution_dump = automation_job.dump()
-        after_execution_portfolio_content = after_execution_dump["automation"]["client_exchange_account_elements"]["portfolio"]["content"]
+        after_execution_portfolio_content = after_execution_dump["automation"]["exchange_account_elements"]["portfolio"]["content"]
         assert list(sorted(after_execution_portfolio_content.keys())) == ["BTC", "ETH", "USDT"]
         for asset_type in [common_constants.PORTFOLIO_AVAILABLE, common_constants.PORTFOLIO_TOTAL]:
             assert 950 < after_execution_portfolio_content["USDT"][asset_type] < 1000 # spent some USDT to buy BTC

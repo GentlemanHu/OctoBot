@@ -51,6 +51,12 @@ class ProfileImportError(Exception):
     """
 
 
+class ProfileDataError(Exception):
+    """
+    Profile related Exception: raised when the profile data is invalid
+    """
+
+
 class ConfigEvaluatorError(Exception):
     """
     Evaluator config related Exception
@@ -174,4 +180,10 @@ class ResolvedParameterNotFoundError(DSLInterpreterError):
 class ErrorStatementEncountered(DSLInterpreterError):
     """
     Raised when a error statement is encountered when executing a script
+    """
+
+
+class MaxAttemptsExceededError(ErrorStatementEncountered):
+    """
+    Raised when a max attempts is exceeded when executing a script
     """

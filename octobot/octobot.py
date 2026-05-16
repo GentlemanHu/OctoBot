@@ -105,6 +105,8 @@ class OctoBot:
         self.initializer = initializer.Initializer(self)
         self.task_manager = task_manager.TaskManager(self)
         self._init_metadata_run_task = None
+        # optional path for periodic ProcessBotState JSON (see cli --dump-state)
+        self.dump_state_path = None
 
         # Producers
         self.exchange_producer = None

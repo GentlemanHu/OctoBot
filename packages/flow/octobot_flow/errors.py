@@ -28,6 +28,10 @@ class AutomationValidationError(ConfigurationError):
     """raise when an automation configuration or state is invalid"""
 
 
+class WalletNotInitializedError(ConfigurationError):
+    """raise when a wallet is not initialized"""
+
+
 class UnsupportedActionTypeError(AutomationActionError):
     """raise when an unsupported action type is encountered"""
 
@@ -61,6 +65,10 @@ class CommunityAuthenticationRequiredError(CommunityError):
     """raise when community authentication is required"""
 
 
+class CommunityTradingSignalError(CommunityError):
+    """an error related to the trading signal of the bot"""
+
+
 class UnresolvedDSLScriptError(AutomationActionError):
     """raise when a DSL script is not resolved"""
 
@@ -71,6 +79,10 @@ class ActionDependencyError(AutomationActionError):
 
 class AutomationDAGResetError(AutomationActionError):
     """raise when a DAG reset fails"""
+
+
+class SynchronizedExchangeConflictError(AutomationActionError):
+    """raise when external exchange snapshots and a live exchange manager would both apply in one pass"""
 
 
 class ActionDependencyNotFoundError(ActionDependencyError):

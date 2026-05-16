@@ -17,14 +17,15 @@ import decimal
 import asyncio
 import contextlib
 import typing
+import os
 
 import octobot_commons.logging as commons_logging
+import octobot_commons.proxy_config as proxy_config
 import octobot_trading.constants as constants
 import octobot_trading.errors as errors
 import octobot_trading.blockchain_wallets.blockchain_wallet_parameters as blockchain_wallet_parameters
 import octobot_trading.accounts
 import octobot_trading.blockchain_wallets.adapter as blockchain_wallet_adapter
-
 
 class BlockchainWallet(octobot_trading.accounts.AbstractAccount):
     """
@@ -71,13 +72,17 @@ class BlockchainWallet(octobot_trading.accounts.AbstractAccount):
         asset: str, 
         amount: decimal.Decimal, 
         network: str,
-        address: str, 
+        address: str,
     ) -> dict:
         if constants.SIMULATED_DEPOSIT_ADDRESS in address and not self.IS_SIMULATED:
             raise errors.InvalidArgumentError("Simulated addresses are not allowed on a real wallet")
         if not constants.ALLOW_FUNDS_TRANSFER:
             raise errors.DisabledFundsTransferError("Funds transfer is not enabled")
-        self.logger.info(f"Transferring {amount} {asset} from {self.wallet_descriptor.address} to {address}")
+        self.logger.info(
+            f"Transferring {commons_logging.get_private_placeholder_if_necessary(amount)} {asset} from "
+            f"{commons_logging.get_private_minimized_message_if_necessary(self.wallet_descriptor.address)} "
+            f"to {commons_logging.get_private_minimized_message_if_necessary(address)}"
+        )
         if asset == self.blockchain_descriptor.native_coin_symbol:
             transaction = await self.transfer_native_coin(amount, address)
         else:
@@ -127,4 +132,22 @@ class BlockchainWallet(octobot_trading.accounts.AbstractAccount):
         raise KeyError(
             f"Token {token_symbol} not found in {self.__class__.__name__} "
             f"wallet's {len(self.blockchain_descriptor.tokens)} pre-configured tokens."
+        )
+
+    @classmethod
+    def get_proxy_config(cls) -> proxy_config.ProxyConfig:
+        blockchain_specific_proxy_config = cls._get_proxy_config(cls.BLOCKCHAIN.upper())
+        if blockchain_specific_proxy_config.has_proxy():
+            return blockchain_specific_proxy_config
+        return cls._get_proxy_config(constants.GENERIC_BLOCKCHAIN_PROXY_CONFIG_KEY)
+
+    @staticmethod
+    def _get_proxy_config(key: str) -> proxy_config.ProxyConfig:
+        return proxy_config.ProxyConfig(
+            http_proxy=os.getenv(f"{key}_HTTP_PROXY"),
+            https_proxy=os.getenv(f"{key}_HTTPS_PROXY"),
+            socks_proxy=os.getenv(f"{key}_SOCKS_PROXY"),
+            ws_proxy=os.getenv(f"{key}_WS_PROXY"),
+            wss_proxy=os.getenv(f"{key}_WSS_PROXY"),
+            ws_socks_proxy=os.getenv(f"{key}_WS_SOCKS_PROXY"),
         )

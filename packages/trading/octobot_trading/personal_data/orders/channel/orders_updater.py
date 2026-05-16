@@ -20,6 +20,8 @@ import octobot_commons.async_job as async_job
 import octobot_commons.tree as commons_tree
 import octobot_commons.enums as commons_enums
 import octobot_commons.html_util as html_util
+import octobot_commons.asyncio_tools as asyncio_tools
+import octobot_commons.logging as logging
 
 import octobot_trading.errors as errors
 import octobot_trading.personal_data.orders.channel.orders as orders_channel
@@ -132,6 +134,47 @@ class OrdersUpdater(orders_channel.OrdersProducer):
                 self._set_initialized_event(symbol)
         self._is_initialized_event_set = True
 
+    async def fetch_open_orders(
+        self,
+        symbols: list[str],
+        limit=ORDERS_UPDATE_LIMIT,
+        retry_till_success=False,
+        retry_attempts=0,
+    ) -> list[dict]:
+        """
+        Fetch open orders from the exchange for the given symbols.
+        :param symbols: symbols to fetch open orders for
+        :param limit: the exchange request orders count limit
+        :param retry_till_success: retry request till it works. Should be rarely used as it might take some time
+        :param retry_attempts: how many times to retry before failing
+        """
+        if not symbols:
+            return []
+        exchange = self.channel.exchange_manager.exchange
+
+        async def fetch_open_orders_for_symbol(trading_symbol: str) -> list:
+            if retry_till_success:
+                return await exchange.retry_till_success(
+                    self.OPEN_ORDER_INITIAL_FETCH_GIVE_UP_TIMEOUT,
+                    exchange.get_open_orders, symbol=trading_symbol, limit=limit,
+                )
+            if retry_attempts:
+                return await exchange.retry_n_time(
+                    retry_attempts,
+                    exchange.get_open_orders, symbol=trading_symbol, limit=limit,
+                )
+            return await exchange.get_open_orders(symbol=trading_symbol, limit=limit)
+
+        if len(symbols) == 1:
+            return await fetch_open_orders_for_symbol(symbols[0])
+        open_orders_batches = await asyncio_tools.gather_waiting_for_all_before_raising(
+            *[fetch_open_orders_for_symbol(trading_symbol) for trading_symbol in symbols]
+        )
+        aggregated_orders: list = []
+        for open_orders_batch in open_orders_batches:
+            aggregated_orders.extend(open_orders_batch)
+        return aggregated_orders
+
     async def _symbol_orders_fetch_and_push(self, symbol: str, is_from_bot=True, limit=ORDERS_UPDATE_LIMIT, retry_till_success=False, retry_attempts=0):
         """
         Update open orders from exchange for a specific symbol
@@ -141,20 +184,9 @@ class OrdersUpdater(orders_channel.OrdersProducer):
         :param retry_till_success: retry request till it works. Should be rarely used as it might take some time
         :param retry_attempts: how many times to retry before failing
         """
-        if retry_till_success:
-            open_orders: list = await self.channel.exchange_manager.exchange.retry_till_success(
-                self.OPEN_ORDER_INITIAL_FETCH_GIVE_UP_TIMEOUT,
-                self.channel.exchange_manager.exchange.get_open_orders, symbol=symbol, limit=limit,
-            )
-        elif retry_attempts:
-            open_orders: list = await self.channel.exchange_manager.exchange.retry_n_time(
-                retry_attempts,
-                self.channel.exchange_manager.exchange.get_open_orders, symbol=symbol, limit=limit,
-            )
-        else:
-            open_orders: list = await self.channel.exchange_manager.exchange.get_open_orders(
-                symbol=symbol, limit=limit
-            )
+        open_orders = await self.fetch_open_orders(
+            [symbol], limit=limit, retry_till_success=retry_till_success, retry_attempts=retry_attempts
+        )
         if open_orders:
             await self.push(open_orders, is_from_bot=is_from_bot)
         else:
@@ -208,19 +240,19 @@ class OrdersUpdater(orders_channel.OrdersProducer):
         :return: True if the order was updated
         """
         exchange_name = self.channel.exchange_manager.exchange_name
-        self.logger.info(f"Requested update for {order} on {exchange_name}")
+        self.logger.info(f"Requested update for {logging.get_private_minimized_message_if_necessary(order)} on {exchange_name}")
         raw_order = await self.channel.exchange_manager.exchange.get_order(
             order.exchange_order_id, order.symbol, order_type=order.order_type
         )
 
         if raw_order is not None:
-            self.logger.info(f"Received update for {order} on {exchange_name}: {raw_order}")
+            self.logger.info(f"Received update for {logging.get_private_minimized_message_if_necessary(order)} on {exchange_name}: {logging.get_private_minimized_message_if_necessary(raw_order)}")
             await self.channel.exchange_manager.exchange_personal_data.handle_order_update_from_raw(
                 order.exchange_order_id, raw_order, should_notify=should_notify
             )
-            self.logger.info(f"Completed update for {order} on {exchange_name}")
+            self.logger.info(f"Completed update for {logging.get_private_minimized_message_if_necessary(order)} on {exchange_name}")
         else:
-            self.logger.info(f"Can't received update for {order} on {exchange_name}: received order is None")
+            self.logger.info(f"Can't received update for {logging.get_private_minimized_message_if_necessary(order)} on {exchange_name}: received order is None")
 
     def _should_run(self):
         return self.channel.exchange_manager.exchange.is_successfully_authenticated()

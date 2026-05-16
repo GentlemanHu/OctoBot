@@ -142,6 +142,8 @@ class Order(util.Initializable):
         self.exchange_creation_params: dict[str, typing.Any] = {}
         # kwargs given to trader.create_order() when this order should be created later on
         self.trader_creation_kwargs: dict[str, typing.Any] = {}
+        # extra params relevant to the current exchange. Should never be used in generic code
+        self.exchange_specific_order_values: dict[str, typing.Any] = {}
 
     @classmethod
     def get_name(cls):
@@ -149,7 +151,7 @@ class Order(util.Initializable):
 
     def get_logger_name(self):
         if self.logger_name is None:
-            self.logger_name = f"{self.get_name()} | {self.order_id} [exchange id: {self.exchange_order_id}]"
+            self.logger_name = f"{self.get_name()} | {self.order_id} [exchange id: {logging.get_private_minimized_message_if_necessary(self.exchange_order_id)}]"
         return self.logger_name
 
     def update(
@@ -162,6 +164,7 @@ class Order(util.Initializable):
         associated_entry_id=None, trigger_above=None, trailing_profile: typing.Optional[trailing_profiles.TrailingProfile]=None,
         is_active=None, active_trigger: typing.Optional[base_trigger_import.BaseTrigger] = None,
         cancel_policy: typing.Optional[order_cancel_policy_import.OrderCancelPolicy] = None,
+        exchange_specific_order_values: typing.Optional[dict[str, typing.Any]] = None,
     ) -> bool:
         changed: bool = False
         should_update_total_cost = False
@@ -321,6 +324,10 @@ class Order(util.Initializable):
             changed = True
             self.cancel_policy = cancel_policy
 
+        if exchange_specific_order_values is not None and self.exchange_specific_order_values != exchange_specific_order_values:
+            changed = True
+            self.exchange_specific_order_values = exchange_specific_order_values
+
         if should_update_total_cost and not total_cost:
             self._update_total_cost()
 
@@ -332,7 +339,9 @@ class Order(util.Initializable):
         """
         await self.on_filled(enable_associated_orders_creation, force_artificial_orders=True)
         if self.on_filled_artificial_order is not None:
-            logging.get_logger(self.logger_name).info(f"Created artificial order: {self.on_filled_artificial_order}")
+            logging.get_logger(self.logger_name).info(
+                f"Created artificial order: {logging.get_private_minimized_message_if_necessary(self.on_filled_artificial_order)}"
+            )
             if self.order_group:
                 self.on_filled_artificial_order.add_to_order_group(self.order_group)
         return self.on_filled_artificial_order
@@ -706,7 +715,7 @@ class Order(util.Initializable):
             if order.is_cleared():
                 logger.error(
                     f"Chained order {index + 1}/{len(self.chained_orders)} has been cleared: skipping "
-                    f"creation (order: {order})"
+                    f"creation (order: {logging.get_private_minimized_message_if_necessary(order)})"
                 )
                 continue
             can_be_created = await order_util.adapt_chained_order_before_creation(self, order)
@@ -742,13 +751,17 @@ class Order(util.Initializable):
             equivalent_order = await order.create_on_filled_artificial_order(enable_associated_orders_creation)
             if equivalent_order is None:
                 # should not happen on limit or market only orders
-                logger.error(f"Unexpected instant trigger error: {err} when creating chained order {order}")
+                logger.error(
+                    f"Unexpected instant trigger error: {err} when creating chained order "
+                    f"{logging.get_private_minimized_message_if_necessary(order)}"
+                )
             else:
                 # acceptable: convert this order into its "triggered artificial order" equivalent
                 logger.warning(
                     f"Outdated chained order: order trigger price has already been reached. "
                     f"Creating equivalent {equivalent_order.get_name()} artificial order instead. "
-                    f"Initial order: {order}, artificial order: {equivalent_order}."
+                    f"Initial order: {logging.get_private_minimized_message_if_necessary(order)}, "
+                    f"artificial order: {logging.get_private_minimized_message_if_necessary(equivalent_order)}."
                 )
             # note: grouped orders will also be skipped as this one is filled (should_be_created will be false)
             order.status = enums.OrderStatus.CLOSED
@@ -759,7 +772,8 @@ class Order(util.Initializable):
             logger.exception(
                 err,
                 True,
-                f"Unexpected error ({err.__class__.__name__}: {err}) when creating chained order: {order}"
+                f"Unexpected error ({err.__class__.__name__}: {err}) when creating chained order: "
+                f"{logging.get_private_minimized_message_if_necessary(order)}"
             )
 
     async def set_as_chained_order(self, triggered_by, has_been_bundled, exchange_creation_params,
@@ -953,7 +967,8 @@ class Order(util.Initializable):
             fee=order_util.parse_raw_fees(raw_order.get(enums.ExchangeConstantsOrderColumns.FEE.value, None)),
             timestamp=raw_order.get(enums.ExchangeConstantsOrderColumns.TIMESTAMP.value, None),
             reduce_only=raw_order.get(enums.ExchangeConstantsOrderColumns.REDUCE_ONLY.value, False),
-            trigger_above=raw_order.get(enums.ExchangeConstantsOrderColumns.TRIGGER_ABOVE.value, None)
+            trigger_above=raw_order.get(enums.ExchangeConstantsOrderColumns.TRIGGER_ABOVE.value, None),
+            exchange_specific_order_values=raw_order.get(enums.ExchangeConstantsOrderColumns.EXCHANGE_SPECIFIC_ORDER_VALUES.value, {}),
         )
 
     async def update_from_order(self, other_order):
@@ -1008,6 +1023,7 @@ class Order(util.Initializable):
             order_dict[enums.ExchangeConstantsOrderColumns.TAKER_OR_MAKER.value]
         ).value if order_dict.get(enums.ExchangeConstantsOrderColumns.TAKER_OR_MAKER.value) else self.taker_or_maker
         self.is_active = order_dict.get(enums.ExchangeConstantsOrderColumns.IS_ACTIVE.value, self.is_active)
+        self.exchange_specific_order_values = order_dict.get(enums.ExchangeConstantsOrderColumns.EXCHANGE_SPECIFIC_ORDER_VALUES.value, {})
         if active_trigger := order_details.get(enums.StoredOrdersAttr.ACTIVE_TRIGGER.value):
             active_trigger_price = (
                 decimal.Decimal(str(active_trigger[enums.StoredOrdersAttr.ACTIVE_TRIGGER_PRICE.value]))
@@ -1131,10 +1147,16 @@ class Order(util.Initializable):
                 else enums.ExchangeConstantsMarketPropertyColumns.MAKER
             ).value
 
-    def is_synchronization_enabled(self):
+    def is_synchronization_enabled(self) -> bool:
         return (
             self.exchange_manager is not None and
             self.exchange_manager.exchange_personal_data.orders_manager.enable_order_auto_synchronization
+        )
+    
+    def is_fill_event_enabled(self) -> bool:
+        return self.is_synchronization_enabled() or (
+            self.exchange_manager is not None and
+            self.exchange_manager.exchange_personal_data.orders_manager.enable_order_fill_events
         )
 
     def to_dict(self) -> dict[str, typing.Any]:
@@ -1161,6 +1183,7 @@ class Order(util.Initializable):
             enums.ExchangeConstantsOrderColumns.BROKER_APPLIED.value: self.broker_applied,
             enums.ExchangeConstantsOrderColumns.TAKER_OR_MAKER.value: self.taker_or_maker,
             enums.ExchangeConstantsOrderColumns.IS_ACTIVE.value: self.is_active,
+            enums.ExchangeConstantsOrderColumns.EXCHANGE_SPECIFIC_ORDER_VALUES.value: self.exchange_specific_order_values,
         }
 
     def clear_active_order_elements(self):
@@ -1184,25 +1207,28 @@ class Order(util.Initializable):
         chained_order = "" if self.triggered_by is None else \
             "triggered chained order | " if self.is_created() else "untriggered chained order | "
         tag = f" | tag: {self.tag}" if self.tag else ""
+        fees_details = logging.get_private_placeholder_if_necessary(
+            f"{self.fee[enums.FeePropertyColumns.COST.value]} {self.fee[enums.FeePropertyColumns.CURRENCY.value]}"
+        ) if self.fee else ""
         fees = (
-            f"Fees : {self.fee[enums.FeePropertyColumns.COST.value]} {self.fee[enums.FeePropertyColumns.CURRENCY.value]} | "
+            f"Fees : {fees_details} | "
             if self.fee else ""
         )
         trailing_profile = f"Trailing profile : {self.trailing_profile} | " if self.trailing_profile else ""
         cancel_policy = f"Cancel policy : {self.cancel_policy} | " if self.cancel_policy else ""
-        filled_quantity = f" ({self.filled_quantity} Filled)" if self.filled_quantity else ""
+        filled_quantity = f" ({logging.get_private_placeholder_if_necessary(self.filled_quantity)} Filled)" if self.filled_quantity else ""
         return (
             f"{inactive}{self.symbol} | "
             f"{chained_order}"
             f"{self.order_type.name if self.order_type is not None else 'Unknown'} | "
             f"Price : {str(self.origin_price)} | "
-            f"Quantity : {str(self.origin_quantity)}{filled_quantity}{' (Reduce only)' if self.reduce_only else ''} | "
+            f"Quantity : {str(logging.get_private_placeholder_if_necessary(self.origin_quantity))}{filled_quantity}{' (Reduce only)' if self.reduce_only else ''} | "
             f"State : {self.state.state.value if self.state is not None else 'Unknown'} | "
             f"{trailing_profile}"
             f"{cancel_policy}"
             f"{fees}"
             f"id : {self.order_id}{tag} "
-            f"exchange id: {self.exchange_order_id}"
+            f"exchange id: {logging.get_private_minimized_message_if_necessary(self.exchange_order_id)}"
         )
 
     def __str__(self):
