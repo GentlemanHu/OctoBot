@@ -1,7 +1,6 @@
 from octobot_flow.entities.accounts import (
     PortfolioAssetHolding,
-    ReferenceExchangeAccountElements,
-    ClientExchangeAccountElements,
+    ExchangeAccountElements,
     ExchangeAccountDetails,
     ExchangeAccountPortfolio,
     AccountElements,
@@ -18,6 +17,7 @@ from octobot_flow.entities.automations import (
     FetchedExchangeAccountElements,
     FetchedExchangePublicData,
     FetchedExchangeData,
+    FetchedCopyTradingData,
     AutomationMetadata,
     AutomationDetails,
     AutomationState,
@@ -31,12 +31,12 @@ from octobot_flow.entities.automations import (
     PostIterationActionsDetails,
 )
 from octobot_flow.entities.community import (
-    UserAuthentication
+    UserAuthentication,
+    TradingSignal,
 )
 __all__ = [
     "AccountElements",
-    "ReferenceExchangeAccountElements",
-    "ClientExchangeAccountElements",
+    "ExchangeAccountElements",
     "PortfolioAssetHolding",
     "ExchangeAccountDetails",
     "ExchangeAccountPortfolio",
@@ -52,6 +52,7 @@ __all__ = [
     "FetchedExchangeAccountElements",
     "FetchedExchangePublicData",
     "FetchedExchangeData",
+    "FetchedCopyTradingData",
     "AutomationMetadata",
     "AutomationDetails",
     "AutomationState",
@@ -61,4 +62,5 @@ __all__ = [
     "ExecutionDetails",
     "AdditionalActions",
     "UserAuthentication",
+    "TradingSignal",
 ]

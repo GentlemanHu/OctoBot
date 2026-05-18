@@ -11,20 +11,26 @@ import { ApiError, OpenAPI } from "./client"
 import { ThemeProvider } from "./components/theme-provider"
 import { Toaster } from "./components/ui/sonner"
 import "./index.css"
+import { clearAuth } from "./hooks/useAuth"
+import { loadPassword } from "./lib/device-key"
 import { routeTree } from "./routeTree.gen"
 
-OpenAPI.BASE = import.meta.env.NODE_API_URL || (import.meta.env.DEV ? "http://localhost:8000" : "")
+OpenAPI.BASE =
+  import.meta.env.NODE_API_URL ||
+  (import.meta.env.DEV ? "http://localhost:8000" : "")
 OpenAPI.USERNAME = async () => {
   return localStorage.getItem("auth_username") || ""
 }
 OpenAPI.PASSWORD = async () => {
-  return localStorage.getItem("auth_password") || ""
+  return (await loadPassword()) ?? ""
 }
 
 const handleApiError = (error: Error) => {
   if (error instanceof ApiError && [401, 403].includes(error.status)) {
-    localStorage.removeItem("auth_password")
-    window.location.href = "/app/login"
+    if (!window.location.pathname.endsWith("/login")) {
+      void clearAuth()
+      window.location.href = "/app/login"
+    }
   }
 }
 const queryClient = new QueryClient({

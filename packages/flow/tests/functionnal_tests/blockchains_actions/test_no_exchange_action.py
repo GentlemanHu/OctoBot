@@ -6,7 +6,7 @@ import decimal
 import octobot_trading.constants as trading_constants
 import octobot_trading.blockchain_wallets as blockchain_wallets
 
-import octobot_flow
+import octobot_flow.jobs
 import octobot_flow.entities
 import octobot_flow.enums
 
@@ -109,7 +109,7 @@ async def test_start_with_empty_state_and_execute_simple_condition_action(
     ):
         # 1. initialize with configuration (other actions wont be executed as their dependencies are not met)
         automation_state = automation_state_dict(resolved_actions(all_actions))
-        async with octobot_flow.AutomationJob(automation_state, [], {}) as init_automation_job:
+        async with octobot_flow.jobs.AutomationJob(automation_state, [], [], {}) as init_automation_job:
             await init_automation_job.run()
         # check actions execution
         assert len(init_automation_job.automation_state.automation.actions_dag.actions) == len(all_actions)
@@ -128,11 +128,11 @@ async def test_start_with_empty_state_and_execute_simple_condition_action(
         assert after_config_execution_dump["exchange_account_details"]["portfolio"]["content"] == []
         assert "automation" in after_config_execution_dump
         assert "reference_exchange_account_elements" not in after_config_execution_dump["automation"]
-        assert "client_exchange_account_elements" not in after_config_execution_dump["automation"]
+        assert "exchange_account_elements" not in after_config_execution_dump["automation"]
 
         # 2. execute simple condition action
         state = after_config_execution_dump
-        async with octobot_flow.AutomationJob(state, [], {}) as automation_job:
+        async with octobot_flow.jobs.AutomationJob(state, [], [], {}) as automation_job:
             await automation_job.run()
 
         # check bot actions execution
@@ -153,7 +153,7 @@ async def test_start_with_empty_state_and_execute_simple_condition_action(
         # still no portfolio
         assert after_execution_dump["exchange_account_details"]["portfolio"]["content"] == []
         assert "reference_exchange_account_elements" not in after_execution_dump["automation"]
-        assert "client_exchange_account_elements" not in after_execution_dump["automation"]
+        assert "exchange_account_elements" not in after_execution_dump["automation"]
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,7 @@ async def test_start_with_empty_state_and_execute_blockchain_transfer_without_ex
     ):
         # 1. initialize with configuration (other actions wont be executed as their dependencies are not met)
         automation_state = automation_state_dict(resolved_actions(all_actions))
-        async with octobot_flow.AutomationJob(automation_state, [], {}) as init_automation_job:
+        async with octobot_flow.jobs.AutomationJob(automation_state, [], [], {}) as init_automation_job:
             await init_automation_job.run()
         # check actions execution
         assert len(init_automation_job.automation_state.automation.actions_dag.actions) == len(all_actions)
@@ -188,14 +188,14 @@ async def test_start_with_empty_state_and_execute_blockchain_transfer_without_ex
         assert after_config_execution_dump["exchange_account_details"]["portfolio"]["content"] == []
         assert "automation" in after_config_execution_dump
         assert "reference_exchange_account_elements" not in after_config_execution_dump["automation"]
-        assert "client_exchange_account_elements" not in after_config_execution_dump["automation"]
+        assert "exchange_account_elements" not in after_config_execution_dump["automation"]
         # communit auth is not used in this test
         login_mock.assert_not_called()
         insert_bot_logs_mock.assert_not_called()
 
         # 2. execute blockchain transfer actions
         state = after_config_execution_dump
-        async with octobot_flow.AutomationJob(state, [], {}) as automation_job:
+        async with octobot_flow.jobs.AutomationJob(state, [], [], {}) as automation_job:
             await automation_job.run()
 
         # check bot actions execution
@@ -230,7 +230,7 @@ async def test_start_with_empty_state_and_execute_blockchain_transfer_without_ex
         # still no portfolio
         assert after_execution_dump["exchange_account_details"]["portfolio"]["content"] == []
         assert "reference_exchange_account_elements" not in after_execution_dump["automation"]
-        assert "client_exchange_account_elements" not in after_execution_dump["automation"]
+        assert "exchange_account_elements" not in after_execution_dump["automation"]
         
         # communit auth is not used in this test
         login_mock.assert_not_called()

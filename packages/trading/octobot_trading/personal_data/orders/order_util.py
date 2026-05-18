@@ -671,7 +671,10 @@ async def apply_pending_order_from_created_order(pending_order, created_order, t
     await pending_order.update_from_order(created_order)
     if to_be_initialized:
         pending_order.is_initialized = False
-    logging.get_logger(LOGGER_NAME).debug(f"Updated pending order: {pending_order} using {created_order}")
+    logging.get_logger(LOGGER_NAME).debug(
+        f"Updated pending order: {logging.get_private_minimized_message_if_necessary(pending_order)} using "
+        f"{logging.get_private_minimized_message_if_necessary(created_order)}"
+    )
 
 
 async def _apply_pending_order_on_existing_orders(pending_order):
@@ -839,18 +842,51 @@ async def create_and_register_chained_order_on_base_order(
     return params, chained_order
 
 
+async def wait_for_orders_to_fill_considering_order_auto_synchronization(
+    exchange_manager: "octobot_trading.exchanges.ExchangeManager", 
+    orders: list, timeout: float, wait_for_portfolio_update: bool,
+
+    # todo subportfolio: remove these parameters when supported
+    temp_static_wait_time: float = 2, temp_refresh_portfolio_on_static_wait: bool = True
+) -> None:
+    if orders:
+        if exchange_manager.trader.simulate or exchange_manager.exchange_personal_data.orders_manager.enable_order_auto_synchronization:
+            # order will be synchronized by the orders manager
+            await asyncio.gather(
+                *[
+                    wait_for_order_fill(
+                        order, timeout, wait_for_portfolio_update
+                    )
+                    for order in orders
+                ],
+                return_exceptions=True,
+            )
+        else:
+            # todo subportfolio: smartly wait for orders to fill instead of waiting for a fixed time
+            logging.get_logger(LOGGER_NAME).info(
+                f"Waiting for {temp_static_wait_time} seconds to let {len(orders)} orders fill..."
+            )
+            await asyncio.sleep(temp_static_wait_time)
+            if temp_refresh_portfolio_on_static_wait:
+                await exchange_manager.exchange_personal_data.portfolio_manager.refresh_real_trader_portfolio(
+                    force_manual_refresh=True
+                )
+
+
 async def wait_for_order_fill(order, timeout, wait_for_portfolio_update):
     if order.is_open():
         if order.state is None:
             logging.get_logger(LOGGER_NAME).error(
-                f"None state on created order, impossible to wait for fill, order: {order}"
+                f"None state on created order, impossible to wait for fill, order: "
+                f"{logging.get_private_minimized_message_if_necessary(order)}"
             )
         else:
             try:
                 await order.state.wait_for_next_state(timeout)
             except asyncio.TimeoutError:
                 logging.get_logger(LOGGER_NAME).error(
-                    f"Timeout while waiting for {order.order_type.value} open order fill, order {order}"
+                    f"Timeout while waiting for {order.order_type.value} open order fill, order "
+                    f"{logging.get_private_minimized_message_if_necessary(order)}"
                 )
             if wait_for_portfolio_update and isinstance(order.state, fill_order_state.FillOrderState):
                 # portfolio is updated in FillOrderState: wait for this state to complete
@@ -859,12 +895,16 @@ async def wait_for_order_fill(order, timeout, wait_for_portfolio_update):
                 except asyncio.TimeoutError:
                     logging.get_logger(LOGGER_NAME).error(
                         f"Timeout while waiting for {order.order_type.value} filled order state to "
-                        f"complete, order {order}"
+                        f"complete, order {logging.get_private_minimized_message_if_necessary(order)}"
                     )
     if order.is_open():
-        logging.get_logger(LOGGER_NAME).error(f"Unexpected: order is still open, order {order}")
+        logging.get_logger(LOGGER_NAME).error(
+            f"Unexpected: order is still open, order {logging.get_private_minimized_message_if_necessary(order)}"
+        )
     else:
-        logging.get_logger(LOGGER_NAME).info(f"Successfully filled order: {order}.")
+        logging.get_logger(LOGGER_NAME).info(
+            f"Successfully filled order: {logging.get_private_minimized_message_if_necessary(order)}."
+        )
 
 
 def get_short_order_summary(order: typing.Union[dict, order_import.Order]) -> str:
@@ -900,3 +940,4 @@ def get_symbol_count(raw_trades_or_raw_orders: list[dict]) -> dict[str, int]:
             for element in raw_trades_or_raw_orders
         )
     )
+

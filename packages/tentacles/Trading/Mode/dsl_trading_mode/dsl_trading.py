@@ -121,8 +121,13 @@ class DSLTradingMode(trading_modes.AbstractTradingMode):
             + dsl_operators.create_cancel_order_operators(
                 self.exchange_manager, trading_mode=self, dependencies=dependencies
             )
+            + dsl_operators.create_fetch_order_operators(self.exchange_manager)
             + dsl_operators.create_blockchain_wallet_operators(self.exchange_manager)
             + dsl_operators.create_symbol_operators(self)
+            + dsl_operators.create_copy_exchange_account_operators(
+                copier_exchange_manager=self.exchange_manager,
+                copier_trading_mode=self,
+            )
         )
 
     async def interpret_dsl_script(self) -> dsl_interpreter.DSLCallResult:

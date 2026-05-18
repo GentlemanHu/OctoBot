@@ -22,6 +22,7 @@ class ChangedElements(enum.Enum):
     TRADES = "trades"
     PORTFOLIO = "portfolio"
     POSITIONS = "positions"
+    TRANSACTIONS = "transactions"
 
 
 class ActionType(enum.Enum):
@@ -45,3 +46,10 @@ class ActionErrorStatus(enum.Enum):
     BLOCKCHAIN_WALLET_ERROR = "blockchain_wallet_error"
     DISABLED_FUNDS_TRANSFER_ERROR = "disabled_funds_transfer_error"
     UNSUPPORTED_ACTION_TYPE = "unsupported_action_type"
+    MAX_ATTEMPTS_EXCEEDED = "max_attempts_exceeded"
+    DSL_EXECUTION_ERROR = "dsl_execution_error"
+
+
+class AutomationWorkflowErrorStatus(enum.Enum):
+    EXCEPTION_DURING_ITERATION = "exception_during_iteration"
+    INVALID_ACTION_CONFIGURATION = "invalid_action_configuration"

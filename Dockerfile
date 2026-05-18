@@ -1,4 +1,4 @@
-FROM python:3.13-slim-bullseye AS base
+FROM python:3.13-slim-trixie AS base
 
 WORKDIR /tmp
 
@@ -14,7 +14,7 @@ RUN apt-get update \
         libxslt1-dev \
         libxslt-dev \
         libjpeg62-turbo-dev \
-        libatlas-base-dev \
+        libopenblas-dev \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -22,12 +22,14 @@ RUN apt-get update \
 ENV CRYPTOGRAPHY_DONT_BUILD_RUST=1
 
 COPY dist/octobot-*.whl /tmp/
+COPY extra_requirements.txt /tmp/
 RUN python -m venv /opt/venv \
     && . /opt/venv/bin/activate \
     && pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && pip install --no-cache-dir /tmp/octobot-*.whl
+    && pip install --no-cache-dir /tmp/octobot-*.whl \
+    && pip install --no-cache-dir -r /tmp/extra_requirements.txt
 
-FROM python:3.13-slim-bullseye
+FROM python:3.13-slim-trixie
 
 ARG TENTACLES_URL_TAG=""
 ARG VERSION=""
@@ -54,7 +56,7 @@ RUN apt-get update \
         zlib1g-dev \
         libblas-dev \
         liblapack-dev \
-        libatlas-base-dev \
+        libopenblas-dev \
         libopenjp2-7 \
         libtiff-dev \
     && rm -rf /var/lib/apt/lists/* \

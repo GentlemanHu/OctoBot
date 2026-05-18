@@ -150,6 +150,44 @@ async def test_handle_balance_update_from_order(backtesting_trader):
         _refresh_real_trader_portfolio_and_init_event_checker_if_needed_mock.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "exchange_is_future, exchange_is_option",
+    [
+        pytest.param(True, False, id="future"),
+        pytest.param(False, True, id="option"),
+    ],
+)
+async def test_handle_balance_update_from_order_when_future_exchange(
+    backtesting_trader, exchange_is_future, exchange_is_option
+):
+    config, exchange_manager, trader = backtesting_trader
+    portfolio_manager = exchange_manager.exchange_personal_data.portfolio_manager
+
+    previous_is_future = exchange_manager.is_future
+    previous_is_option = exchange_manager.is_option
+    try:
+        exchange_manager.is_future = exchange_is_future
+        exchange_manager.is_option = exchange_is_option
+        trader.simulate = False
+        order = BuyMarketOrder(trader)
+        with patch.object(order, 'is_active', True), \
+             patch.object(portfolio_manager, '_refresh_real_trader_portfolio_and_init_event_checker_if_needed',
+                          new=AsyncMock(return_value=(True, None))) as refresh_real_trader_mock, \
+             patch.object(portfolio_manager, '_refresh_simulated_trader_portfolio_from_order',
+                          new=Mock(return_value=True)) as refresh_simulated_mock:
+            result = await portfolio_manager.handle_balance_update_from_order(order, True, False)
+            assert result == (True, None)
+            refresh_real_trader_mock.assert_called_once()
+            refresh_simulated_mock.assert_not_called()
+            filled_order_event = refresh_real_trader_mock.call_args[0][0]
+            assert isinstance(filled_order_event, update_events.FilledOrderUpdateEvent)
+            assert filled_order_event.resolve_immediately is True
+            assert filled_order_event.is_resolved(portfolio_manager.portfolio) is True
+    finally:
+        exchange_manager.is_future = previous_is_future
+        exchange_manager.is_option = previous_is_option
+
+
 async def test_handle_balance_update_from_withdrawal(backtesting_trader):
     config, exchange_manager, trader = backtesting_trader
     portfolio_manager = exchange_manager.exchange_personal_data.portfolio_manager
@@ -236,8 +274,8 @@ async def test_refresh_real_trader_portfolio_and_init_event_checker_if_needed(ba
     # Clear any existing pending events
     portfolio_manager.pending_portfolio_update_events = []
     
-    with patch.object(portfolio_manager, '_refresh_real_trader_portfolio',
-                      new=AsyncMock(return_value=True)) as _refresh_real_trader_portfolio_mock, \
+    with patch.object(portfolio_manager, 'refresh_real_trader_portfolio',
+                      new=AsyncMock(return_value=True)) as refresh_real_trader_portfolio_mock, \
          patch.object(portfolio_manager, 'start_expected_portfolio_update_checker',
                       new=AsyncMock()) as start_expected_portfolio_update_checker_mock:
         
@@ -246,11 +284,11 @@ async def test_refresh_real_trader_portfolio_and_init_event_checker_if_needed(ba
         assert result == (True, None)
         assert len(portfolio_manager.pending_portfolio_update_events) == 1
         assert portfolio_manager.pending_portfolio_update_events[0] == event
-        _refresh_real_trader_portfolio_mock.assert_called_once()
+        refresh_real_trader_portfolio_mock.assert_called_once()
         start_expected_portfolio_update_checker_mock.assert_not_called()
         
         # Reset mocks and clear pending events
-        _refresh_real_trader_portfolio_mock.reset_mock()
+        refresh_real_trader_portfolio_mock.reset_mock()
         portfolio_manager.pending_portfolio_update_events = []
         
         # Test when update_expected=True and event is not set
@@ -260,11 +298,11 @@ async def test_refresh_real_trader_portfolio_and_init_event_checker_if_needed(ba
         assert result == (True, event2)
         assert len(portfolio_manager.pending_portfolio_update_events) == 1
         assert portfolio_manager.pending_portfolio_update_events[0] == event2
-        _refresh_real_trader_portfolio_mock.assert_called_once()
+        refresh_real_trader_portfolio_mock.assert_called_once()
         start_expected_portfolio_update_checker_mock.assert_called_once()
         
         # Reset mocks and clear pending events
-        _refresh_real_trader_portfolio_mock.reset_mock()
+        refresh_real_trader_portfolio_mock.reset_mock()
         start_expected_portfolio_update_checker_mock.reset_mock()
         portfolio_manager.pending_portfolio_update_events = []
         
@@ -276,19 +314,19 @@ async def test_refresh_real_trader_portfolio_and_init_event_checker_if_needed(ba
         assert result == (True, event3)
         assert len(portfolio_manager.pending_portfolio_update_events) == 1
         assert portfolio_manager.pending_portfolio_update_events[0] == event3
-        _refresh_real_trader_portfolio_mock.assert_called_once()
+        refresh_real_trader_portfolio_mock.assert_called_once()
         start_expected_portfolio_update_checker_mock.assert_not_called()
         
-        # Test when _refresh_real_trader_portfolio returns False
-        _refresh_real_trader_portfolio_mock.reset_mock()
+        # Test when refresh_real_trader_portfolio returns False
+        refresh_real_trader_portfolio_mock.reset_mock()
         portfolio_manager.pending_portfolio_update_events = []
-        _refresh_real_trader_portfolio_mock.return_value = False
+        refresh_real_trader_portfolio_mock.return_value = False
         event4 = update_events.FilledOrderUpdateEvent(order)
         result = await portfolio_manager._refresh_real_trader_portfolio_and_init_event_checker_if_needed(event4, False)
         assert result == (False, None)
         assert len(portfolio_manager.pending_portfolio_update_events) == 1
         assert portfolio_manager.pending_portfolio_update_events[0] == event4
-        _refresh_real_trader_portfolio_mock.assert_called_once()
+        refresh_real_trader_portfolio_mock.assert_called_once()
         start_expected_portfolio_update_checker_mock.assert_not_called()
 
 

@@ -1,11 +1,11 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation } from "@tanstack/react-query"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 
-import { SetupService, type ApiError, type SetupResult } from "@/client"
+import { type ApiError, type SetupResult, SetupService } from "@/client"
 import { AuthLayout } from "@/components/Common/AuthLayout"
 import {
   Form,
@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { LoadingButton } from "@/components/ui/loading-button"
 import { PasswordInput } from "@/components/ui/password-input"
 import useCustomToast from "@/hooks/useCustomToast"
+import { savePassword } from "@/lib/device-key"
 import { handleError } from "@/utils"
 
 export const Route = createFileRoute("/setup/")({
@@ -29,6 +30,7 @@ export const Route = createFileRoute("/setup/")({
 })
 
 const baseSchema = z.object({
+  name: z.string().optional(),
   passphrase: z
     .string()
     .min(8, { message: "Passphrase must be at least 8 characters" }),
@@ -42,9 +44,9 @@ const generateSchema = baseSchema.refine(
 
 const importSchema = baseSchema
   .extend({
-    privateKey: z
-      .string()
-      .regex(/^(0x)?[0-9a-fA-F]{64}$/, { message: "Must be a valid 64-hex-char EVM private key" }),
+    privateKey: z.string().regex(/^(0x)?[0-9a-fA-F]{64}$/, {
+      message: "Must be a valid 64-hex-char EVM private key",
+    }),
   })
   .refine((d) => d.passphrase === d.confirmPassphrase, {
     message: "Passphrases do not match",
@@ -63,24 +65,41 @@ function SetupWallet() {
     resolver: zodResolver(generateSchema),
     mode: "onBlur",
     criteriaMode: "all",
-    defaultValues: { passphrase: "", confirmPassphrase: "" },
+    defaultValues: { name: "", passphrase: "", confirmPassphrase: "" },
   })
 
   const importForm = useForm<ImportData>({
     resolver: zodResolver(importSchema),
     mode: "onBlur",
     criteriaMode: "all",
-    defaultValues: { passphrase: "", confirmPassphrase: "", privateKey: "" },
+    defaultValues: {
+      name: "",
+      passphrase: "",
+      confirmPassphrase: "",
+      privateKey: "",
+    },
   })
 
-  const initMutation = useMutation<SetupResult, ApiError, { passphrase: string; privateKey?: string }>({
-    mutationFn: ({ passphrase, privateKey }) =>
+  const initMutation = useMutation<
+    SetupResult,
+    ApiError,
+    { passphrase: string; privateKey?: string; name?: string }
+  >({
+    mutationFn: ({ passphrase, privateKey, name }) =>
       SetupService.initSetup({
-        requestBody: { passphrase, node_type: "standalone", private_key: privateKey || undefined },
+        requestBody: {
+          passphrase,
+          node_type: "standalone",
+          private_key: privateKey || undefined,
+          name: name?.trim() || undefined,
+        },
       }),
-    onSuccess: (result, { passphrase }) => {
+    onSuccess: async (result, { passphrase, name }) => {
       localStorage.setItem("auth_username", result.address)
-      localStorage.setItem("auth_password", passphrase)
+      if (name?.trim()) {
+        localStorage.setItem("auth_wallet_name", name.trim())
+      }
+      await savePassword(passphrase)
       sessionStorage.setItem("setup_in_progress", "true")
       navigate({ to: "/setup/first-bot" })
     },
@@ -90,11 +109,15 @@ function SetupWallet() {
   })
 
   const onGenerateSubmit = (data: GenerateData) => {
-    initMutation.mutate({ passphrase: data.passphrase })
+    initMutation.mutate({ passphrase: data.passphrase, name: data.name })
   }
 
   const onImportSubmit = (data: ImportData) => {
-    initMutation.mutate({ passphrase: data.passphrase, privateKey: data.privateKey })
+    initMutation.mutate({
+      passphrase: data.passphrase,
+      privateKey: data.privateKey,
+      name: data.name,
+    })
   }
 
   return (
@@ -141,12 +164,33 @@ function SetupWallet() {
             >
               <FormField
                 control={generateForm.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      Wallet name{" "}
+                      <span className="text-muted-foreground font-normal">
+                        (optional)
+                      </span>
+                    </FormLabel>
+                    <FormControl>
+                      <Input placeholder="e.g. My node" {...field} />
+                    </FormControl>
+                    <FormMessage className="text-xs" />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={generateForm.control}
                 name="passphrase"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Passphrase</FormLabel>
                     <FormControl>
-                      <PasswordInput placeholder="Min. 8 characters" {...field} />
+                      <PasswordInput
+                        placeholder="Min. 8 characters"
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage className="text-xs" />
                   </FormItem>
@@ -159,7 +203,10 @@ function SetupWallet() {
                   <FormItem>
                     <FormLabel>Confirm passphrase</FormLabel>
                     <FormControl>
-                      <PasswordInput placeholder="Repeat passphrase" {...field} />
+                      <PasswordInput
+                        placeholder="Repeat passphrase"
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage className="text-xs" />
                   </FormItem>
@@ -176,6 +223,24 @@ function SetupWallet() {
               onSubmit={importForm.handleSubmit(onImportSubmit)}
               className="flex flex-col gap-4"
             >
+              <FormField
+                control={importForm.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      Wallet name{" "}
+                      <span className="text-muted-foreground font-normal">
+                        (optional)
+                      </span>
+                    </FormLabel>
+                    <FormControl>
+                      <Input placeholder="e.g. My node" {...field} />
+                    </FormControl>
+                    <FormMessage className="text-xs" />
+                  </FormItem>
+                )}
+              />
               <FormField
                 control={importForm.control}
                 name="privateKey"
@@ -200,7 +265,10 @@ function SetupWallet() {
                   <FormItem>
                     <FormLabel>Passphrase</FormLabel>
                     <FormControl>
-                      <PasswordInput placeholder="Min. 8 characters" {...field} />
+                      <PasswordInput
+                        placeholder="Min. 8 characters"
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage className="text-xs" />
                   </FormItem>
@@ -213,7 +281,10 @@ function SetupWallet() {
                   <FormItem>
                     <FormLabel>Confirm passphrase</FormLabel>
                     <FormControl>
-                      <PasswordInput placeholder="Repeat passphrase" {...field} />
+                      <PasswordInput
+                        placeholder="Repeat passphrase"
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage className="text-xs" />
                   </FormItem>

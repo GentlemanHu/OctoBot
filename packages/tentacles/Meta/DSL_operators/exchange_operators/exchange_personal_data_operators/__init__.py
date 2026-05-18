@@ -25,6 +25,10 @@ from tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_oper
     create_cancel_order_operators,
     CANCELLED_ORDERS_KEY,
 )
+import tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_operators.fetch_order_operators
+from tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_operators.fetch_order_operators import (
+    create_fetch_order_operators,
+)
 import tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_operators.create_order_operators
 from tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_operators.create_order_operators import (
     create_create_order_operators, CREATED_ORDERS_KEY
@@ -33,11 +37,17 @@ import tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_op
 from tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_operators.futures_contracts_operators import (
     create_futures_contracts_operators,
 )
+from tentacles.Meta.DSL_operators.exchange_operators.exchange_personal_data_operators.copy_exchange_account_operators import (
+    create_copy_exchange_account_operators,
+    CopyExchangeAccountOperatorNames,
+)
 __all__ = [
     "create_portfolio_operators",
     "create_cancel_order_operators",
+    "create_fetch_order_operators",
     "create_create_order_operators",
     "create_futures_contracts_operators",
+    "create_copy_exchange_account_operators",
     "CREATED_ORDERS_KEY",
     "CANCELLED_ORDERS_KEY",
     "CREATED_WITHDRAWALS_KEY",

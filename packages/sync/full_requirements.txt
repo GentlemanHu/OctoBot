@@ -1,2 +1,2 @@
-starfish-server==1.1.0
+starfish-server==2.0.0
 cachetools

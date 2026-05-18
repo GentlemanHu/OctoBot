@@ -55,7 +55,7 @@ class PricesManager(util.Initializable):
         self._reset_prices()
         self.exchange_manager = None # type: ignore
 
-    def set_mark_price(self, mark_price, mark_price_source) -> bool:
+    def set_mark_price(self, mark_price: decimal.Decimal, mark_price_source: str) -> bool:
         """
         Set the mark price if the mark price come from MarkPriceSources.EXCHANGE_MARK_PRICE
         Set the mark price if the mark price come from MarkPriceSources.RECENT_TRADE_AVERAGE and
@@ -145,10 +145,10 @@ class PricesManager(util.Initializable):
             self.logger.exception(
                 err,
                 True,
-                f"Missing {constants.TICKER_CHANNEL} channel producer. Can't force mark price update from this channel"
+                f"Missing {constants.TICKER_CHANNEL} channel producer. Can't force {self.symbol} mark price update from this channel"
             )
         except Exception as err:
-            self.logger.exception(err, True, f"Unexpected error when triggering ticker update: {err}")
+            self.logger.exception(err, True, f"Unexpected error when triggering {self.symbol} ticker update: {err}")
 
     def _set_mark_price_value(self, mark_price):
         """
@@ -169,6 +169,9 @@ class PricesManager(util.Initializable):
                     self._is_mark_price_valid(source_mark_price[1]):
                 return True
         return False
+
+    def clear_mark_price_from_all_sources(self, mark_price_source: str):
+        self.mark_price_from_sources.clear()
 
     def _ensure_price_validity(self):
         """

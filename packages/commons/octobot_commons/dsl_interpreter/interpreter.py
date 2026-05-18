@@ -139,6 +139,15 @@ class Interpreter:
             return self._operator_tree_or_constant.compute()
         return self._operator_tree_or_constant
 
+    def get_top_operator(self) -> typing.Union[
+        dsl_interpreter_operator.Operator,
+        dsl_interpreter_operator.ComputedOperatorParameterType,
+    ]:
+        """
+        Return the top operator of the parsed expression.
+        """
+        return self._operator_tree_or_constant
+
     async def compute_expression_with_result(
         self,
     ) -> dsl_call_result.DSLCallResult:
@@ -370,7 +379,7 @@ class Interpreter:
             )
 
         raise octobot_commons.errors.UnsupportedOperatorError(
-            f"Unsupported AST node type: {type(node).__name__}"
+            f"Unsupported AST node type: {type(node).__name__}. Expression: {self._parsed_expression}"
         )
 
     def _get_name_from_node(self, node: ast.AST) -> str:

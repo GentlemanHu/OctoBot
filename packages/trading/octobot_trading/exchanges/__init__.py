@@ -25,9 +25,11 @@ from octobot_trading.exchanges.exchanges import (
 from octobot_trading.exchanges import exchange_channels
 from octobot_trading.exchanges.exchange_channels import (
     requires_refresh_trigger,
+    create_producers,
     create_exchange_channels,
     create_exchange_producers,
     create_authenticated_producer_from_parent,
+    create_temporary_exchange_channels_and_producers,
 )
 
 from octobot_trading.exchanges import abstract_exchange
@@ -54,6 +56,14 @@ from octobot_trading.exchanges.exchange_factory import (
     init_simulated_exchange,
 )
 from octobot_trading.exchanges.util import (
+    ExchangeData,
+    exchange_data_factory,
+    MarketDetails,
+    OrdersDetails,
+    PortfolioDetails,
+    PositionDetails,
+    ExchangeAuthDetails,
+    ExchangeDetails,
     ExchangeMarketStatusFixer,
     is_ms_valid,
     SymbolDetails,
@@ -63,6 +73,8 @@ from octobot_trading.exchanges.util import (
     get_partners_explanation_message,
     get_enabled_exchanges,
     exchange_error_translator,
+    exchange_manager_from_exchange_data,
+    is_auth_required_exchanges,
     is_compatible_account,
     get_historical_ohlcv,
     get_exchange_type,
@@ -101,7 +113,7 @@ from octobot_trading.exchanges import config
 from octobot_trading.exchanges.config import (
     ExchangeConfig,
     BacktestingExchangeConfig,
-    ProxyConfig,
+    ExchangeProxyConfig,
     ExchangeCredentialsData,
 )
 from octobot_trading.exchanges import traders
@@ -143,7 +155,7 @@ __all__ = [
     "AbstractAdapter",
     "ExchangeConfig",
     "BacktestingExchangeConfig",
-    "ProxyConfig",
+    "ExchangeProxyConfig",
     "ExchangeCredentialsData",
     "ExchangeManager",
     "ExchangeBuilder",
@@ -161,6 +173,8 @@ __all__ = [
     "get_partners_explanation_message",
     "get_enabled_exchanges",
     "exchange_error_translator",
+    "exchange_manager_from_exchange_data",
+    "is_auth_required_exchanges",
     "is_compatible_account",
     "get_historical_ohlcv",
     "get_exchange_type",
@@ -184,8 +198,10 @@ __all__ = [
     "is_websocket_feed_requiring_init",
     "search_and_create_websocket",
     "requires_refresh_trigger",
+    "create_producers",
     "create_exchange_channels",
     "create_exchange_producers",
+    "create_temporary_exchange_channels_and_producers",
     "create_authenticated_producer_from_parent",
     "TraderSimulator",
     "Trader",
@@ -195,6 +211,14 @@ __all__ = [
     "CCXTWebsocketConnector",
     "WebSocketExchange",
     "RestExchange",
+    "ExchangeData",
+    "exchange_data_factory",
+    "MarketDetails",
+    "OrdersDetails",
+    "PortfolioDetails",
+    "PositionDetails",
+    "ExchangeAuthDetails",
+    "ExchangeDetails",
     "ExchangeMarketStatusFixer",
     "is_ms_valid",
     "SymbolDetails",

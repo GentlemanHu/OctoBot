@@ -1,7 +1,12 @@
-import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router"
-import { useState } from "react"
+import {
+  createFileRoute,
+  Link,
+  redirect,
+  useNavigate,
+} from "@tanstack/react-router"
 import { Smartphone, TriangleAlert } from "lucide-react"
-import QRCode from "react-qr-code"
+import { useState } from "react"
+import { QRCode } from "react-qr-code"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -12,6 +17,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { isLoggedIn } from "@/hooks/useAuth"
+import { loadPassword } from "@/lib/device-key"
 
 export const Route = createFileRoute("/setup/mobile-app")({
   beforeLoad: () => {
@@ -40,9 +46,9 @@ function SetupMobileApp() {
     navigate({ to: "/" })
   }
 
-  const revealQr = () => {
+  const revealQr = async () => {
     const address = localStorage.getItem("auth_username") || ""
-    const passphrase = localStorage.getItem("auth_password") || ""
+    const passphrase = (await loadPassword()) ?? ""
     setQrValue(
       JSON.stringify({
         url: window.location.origin,
@@ -72,9 +78,7 @@ function SetupMobileApp() {
                 <Smartphone className="size-12 text-primary" />
               </div>
               <CardTitle>1. Download the app</CardTitle>
-              <CardDescription>
-                Available on iOS and Android.
-              </CardDescription>
+              <CardDescription>Available on iOS and Android.</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col items-center gap-3">
               <a
@@ -135,7 +139,7 @@ function SetupMobileApp() {
                 </Button>
               ) : (
                 <>
-                  <div className="flex items-start gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm text-yellow-600 dark:text-yellow-400 w-full">
+                  <div className="flex items-start gap-2 rounded-md border border-warn/30 bg-warn/10 p-3 text-sm text-warn w-full">
                     <TriangleAlert className="mt-0.5 size-4 shrink-0" />
                     <span>
                       Only scan on a trusted device. The QR code contains your

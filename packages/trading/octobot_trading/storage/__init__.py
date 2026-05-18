@@ -30,6 +30,7 @@ from octobot_trading.storage.orders_storage import (
     OrdersStorage,
     get_order_trailing_profile_dict,
     restore_order_storage_origin_value,
+    update_enriched_order,
 )
 
 from octobot_trading.storage import portfolio_storage
@@ -57,12 +58,14 @@ from octobot_trading.storage.util import (
     get_account_type_suffix_from_exchange_manager,
     get_account_type_suffix_from_run_metadata,
     get_account_type_suffix,
+    get_run_databases_identifier,
 )
 
 __all__ = [
     "AbstractStorage",
     "TradesStorage",
     "OrdersStorage",
+    "update_enriched_order",
     "get_order_trailing_profile_dict",
     "restore_order_storage_origin_value",
     "PortfolioStorage",
@@ -72,4 +75,5 @@ __all__ = [
     "get_account_type_suffix_from_exchange_manager",
     "get_account_type_suffix_from_run_metadata",
     "get_account_type_suffix",
+    "get_run_databases_identifier",
 ]

@@ -129,7 +129,7 @@ class PortfolioManager(util.Initializable):
                     self.portfolio.update_portfolio_from_funding(position, funding_rate)
                     return True
                 # on real trading: reload portfolio to ensure portfolio sync
-                return await self._refresh_real_trader_portfolio()
+                return await self.refresh_real_trader_portfolio()
         return False
 
     async def handle_balance_update_from_withdrawal(
@@ -259,14 +259,14 @@ class PortfolioManager(util.Initializable):
             self.enable_portfolio_available_update_from_order = previous_enable_portfolio_available_update_from_order
             self.enable_portfolio_exchange_sync = previous_enable_portfolio_exchange_sync
 
-    async def _refresh_real_trader_portfolio(self) -> bool:
+    async def refresh_real_trader_portfolio(self, force_manual_refresh: bool = False) -> bool:
         """
         Call BALANCE_CHANNEL producer to refresh real trader portfolio
         :return: True if the portfolio was updated
         """
         return await exchange_channel.get_chan(
             constants.BALANCE_CHANNEL, self.exchange_manager.id
-        ).get_internal_producer().refresh_real_trader_portfolio()
+        ).get_internal_producer().refresh_real_trader_portfolio(force_manual_refresh=force_manual_refresh)
 
     async def start_expected_portfolio_update_checker(self) -> None:
         if not await exchange_channel.get_chan(
@@ -381,7 +381,9 @@ class PortfolioManager(util.Initializable):
                     self.apply_forced_portfolio()
                 else:
                     self._load_simulated_portfolio_from_history()
-            self.logger.debug(f"{constants.CURRENT_PORTFOLIO_STRING} {self.portfolio.portfolio}")
+            self.logger.debug(
+                f"{constants.CURRENT_PORTFOLIO_STRING} {logging.get_private_placeholder_if_necessary(self.portfolio.portfolio)}"
+            )
 
     def _load_simulated_portfolio_from_history(self):
         portfolio_amount_dict = personal_data.parse_decimal_config_portfolio(
@@ -407,7 +409,11 @@ class PortfolioManager(util.Initializable):
                 }
         self._forced_portfolio = forced_portfolio_initial_config
 
-    def apply_forced_portfolio(self, forced_portfolio_config: typing.Optional[dict[str, typing.Any]] = None):
+    def apply_forced_portfolio(
+        self,
+        forced_portfolio_config: typing.Optional[dict[str, typing.Any]] = None,
+        update_available_funds_from_open_orders: bool = False,
+    ):
         """
         Load new portfolio from config settings
         """
@@ -415,6 +421,19 @@ class PortfolioManager(util.Initializable):
             self.set_forced_portfolio_initial_config(forced_portfolio_config)
         portfolio_amount_dict = personal_data.parse_decimal_config_portfolio(self._forced_portfolio)
         self.handle_balance_update(self.portfolio.get_portfolio_from_amount_dict(portfolio_amount_dict))
+        if update_available_funds_from_open_orders:
+            self._updated_available_from_open_orders()
+
+    def _updated_available_from_open_orders(self) -> None:
+        """
+        Apply locked funds for open orders.
+        """
+        if not self.enable_portfolio_available_update_from_order:
+            return
+        for order in self.exchange_manager.exchange_personal_data.orders_manager.get_open_orders():
+            self.refresh_portfolio_available_from_order(
+                order, is_new_order=True
+            )
 
     def _set_initialized_event(self):
         commons_tree.EventProvider.instance().trigger_event(
@@ -450,7 +469,7 @@ class PortfolioManager(util.Initializable):
         # for real trading only:
         # reload portfolio to ensure portfolio sync
         self.pending_portfolio_update_events.append(event)
-        refreshed = await self._refresh_real_trader_portfolio()
+        refreshed = await self.refresh_real_trader_portfolio()
         if not update_expected:
             return refreshed, None
         # refreshing real trader portfolio might have set the event,

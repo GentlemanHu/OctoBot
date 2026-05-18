@@ -20,6 +20,7 @@ import octobot_commons.tentacles_management as tentacles_management
 
 import octobot_trading.exchanges as exchanges
 import octobot_trading.exchange_channel as exchange_channel
+import octobot_trading.exchange_data as exchange_data_import
 
 
 async def create_exchange_channels(exchange_manager) -> None:
@@ -44,19 +45,42 @@ async def create_exchange_producers(exchange_manager, forced_producers=None) -> 
 
     # Always init exchange user data first on real trading
     if _should_create_authenticated_producers(exchange_manager):
-        await _create_producers(exchange_manager, personal_data.AUTHENTICATED_UPDATER_PRODUCERS)
+        await create_producers(exchange_manager, personal_data.AUTHENTICATED_UPDATER_PRODUCERS)
 
     # Real data producers
     if _should_create_unauthenticated_producers(exchange_manager):
         import octobot_trading.exchange_data as exchange_data
-        await _create_producers(exchange_manager, exchange_data.UNAUTHENTICATED_UPDATER_PRODUCERS)
+        await create_producers(exchange_manager, exchange_data.UNAUTHENTICATED_UPDATER_PRODUCERS)
 
     # Simulated producers
     if _should_create_simulated_producers(exchange_manager):
-        await _create_producers(exchange_manager, personal_data.AUTHENTICATED_UPDATER_SIMULATOR_PRODUCERS)
+        await create_producers(exchange_manager, personal_data.AUTHENTICATED_UPDATER_SIMULATOR_PRODUCERS)
 
     if forced_producers:
-        await _create_producers(exchange_manager, forced_producers)
+        await create_producers(exchange_manager, forced_producers)
+
+
+async def create_temporary_exchange_channels_and_producers(
+    exchange_manager: "exchanges.ExchangeManager",
+    create_authenticated_producers: bool,
+    start_producers: bool = False,
+    subscribe_indirect_producers_if_not_started: bool = False,
+):
+    await create_exchange_channels(exchange_manager)
+    await create_producers(
+        exchange_manager, 
+        exchange_data_import.UNAUTHENTICATED_UPDATER_PRODUCERS,
+        start_producers=start_producers,
+        subscribe_indirect_producers_if_not_started=subscribe_indirect_producers_if_not_started
+    )
+    if create_authenticated_producers:
+        import octobot_trading.personal_data as personal_data
+        await create_producers(
+            exchange_manager,
+            personal_data.AUTHENTICATED_UPDATER_PRODUCERS,
+            start_producers=start_producers,
+            subscribe_indirect_producers_if_not_started=subscribe_indirect_producers_if_not_started
+        )
 
 
 def _should_create_authenticated_producers(exchange_manager):
@@ -90,50 +114,91 @@ def _should_create_unauthenticated_producers(exchange_manager):
     return not exchange_manager.is_backtesting
 
 
-async def _create_producers(exchange_manager, producers_classes) -> None:
+async def create_producers(
+    exchange_manager: "exchanges.ExchangeManager", producers_classes,
+    start_producers: bool = True, subscribe_indirect_producers_if_not_started: bool = False
+) -> None:
     """
     Create a list of producer instance
     :param exchange_manager: the related exchange manager
     :param producers_classes: the list of producer classes
     """
     for updater in producers_classes:
-        await _create_producer(exchange_manager, updater)
+        await _create_producer(
+            exchange_manager, updater, 
+            start_producers=start_producers, 
+            subscribe_indirect_producers_if_not_started=subscribe_indirect_producers_if_not_started
+        )
 
 
-async def _create_producer(exchange_manager, producer) -> channel_producer.Producer:
+async def _create_producer(
+    exchange_manager, producer,
+    start_producers: bool = True, subscribe_indirect_producers_if_not_started: bool = False
+) -> channel_producer.Producer:
     """
     Create a producer instance
     :param exchange_manager: the related exchange manager
     :param producer: the producer to create
+    :param start_producers: whether to start producers if needed
+    :param subscribe_indirect_producers_if_not_started: whether to subscribe indirect producers in case a producer is not started
     :return: the producer instance created
     """
-    should_start_producer = True
     producer_instance = producer(exchange_channel.get_chan(producer.CHANNEL_NAME, exchange_manager.id))
     if exchanges.is_channel_managed_by_websocket(exchange_manager, producer.CHANNEL_NAME):
         # websocket is handling this channel: initialize data if required
         exchange_manager.logger.debug(
             f"{exchange_manager.exchange_name} {producer.CHANNEL_NAME} channel is updated by websocket feed"
         )
-        should_start_producer = \
+        start_producers = \
             not exchanges.is_channel_fully_managed_by_websocket(exchange_manager, producer.CHANNEL_NAME)
         if exchanges.is_websocket_feed_requiring_init(exchange_manager, producer.CHANNEL_NAME):
             try:
                 producer_instance.trigger_single_update()
             except Exception as e:
-                exchange_manager.logger.exception(e, True,
-                                                  f"Error when initializing data for {producer.CHANNEL_NAME} "
-                                                  f"channel required by websocket: {e}")
-    if should_start_producer:
+                exchange_manager.logger.exception(
+                    e, True, 
+                    f"Error when initializing data for {producer.CHANNEL_NAME} channel required by websocket: {e}"
+                )
+    if start_producers:
         # no websocket for this channel (or channel is not fully managed by ws): start a producer
         exchange_manager.logger.debug(
             f"{exchange_manager.exchange_name} {producer.CHANNEL_NAME} channel "
             f"is updated by {producer_instance.__class__.__name__}"
         )
         await producer_instance.run()
+    elif (
+        subscribe_indirect_producers_if_not_started
+        and isinstance(producer_instance, exchange_channel.IndirectExchangeChannelProducer)
+    ):
+        exchange_manager.logger.debug(
+            f"{exchange_manager.exchange_name} {producer.CHANNEL_NAME} channel subscribing as indirect producer"
+        )
+        await producer_instance.subscribe()
     else:
         # register producer to be able to reach it later on in modify() if needed
         await producer_instance.channel.register_producer(producer_instance)
     return producer_instance
+
+
+async def create_minimal_dynamic_symbols_env_producers_if_needed(
+    exchange_manager,
+    start_producers: bool = False, subscribe_indirect_producers_if_not_started: bool = True
+):
+    if not _has_minimal_dynamic_symbols_env_producers(exchange_manager):
+        for producer_class in exchange_data_import.MINIMAL_DYNAMIC_SYMBOLS_ENV_UPDATER_PRODUCERS.values():
+            await _create_producer(
+                exchange_manager, producer_class,
+                start_producers=start_producers, subscribe_indirect_producers_if_not_started=subscribe_indirect_producers_if_not_started
+            )
+
+
+def _has_minimal_dynamic_symbols_env_producers(exchange_manager) -> bool:
+    created_channels = exchange_channel.get_exchange_channels(exchange_manager.id)
+    for channel_name in exchange_data_import.MINIMAL_DYNAMIC_SYMBOLS_ENV_UPDATER_PRODUCERS:
+        if (channel := created_channels.get(channel_name)) and not channel.get_producers():
+            # this channel is required and created but has no producer
+            return False
+    return True
 
 
 async def create_authenticated_producer_from_parent(exchange_manager,

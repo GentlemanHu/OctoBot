@@ -17,12 +17,19 @@
 import logging
 import typing
 
+import pydantic
 from fastapi import APIRouter
 
 import octobot_node.config
+import octobot_node.constants
 import octobot_node.models
 import octobot_node.scheduler.api
 import octobot_node.scheduler.scheduler
+
+try:
+    from tentacles.Services.Interfaces.node_api_interface.api.deps import CurrentUser
+except ImportError:
+    from api.deps import CurrentUser
 
 try:
     import octobot_commons.logging.context_based_file_handler as context_based_file_handler
@@ -32,33 +39,38 @@ except ImportError:
 router = APIRouter(tags=["nodes"])
 
 
+class NodeConfigUpdate(pydantic.BaseModel):
+    node_type: typing.Optional[typing.Literal["standalone", "master"]] = None
+    use_dedicated_log_file_per_automation: typing.Optional[bool] = None
+
+
 @router.get("/me", response_model=octobot_node.models.Node)
-def get_current_node() -> typing.Any:
+def get_current_node(current_user: CurrentUser) -> typing.Any:
     status = octobot_node.scheduler.api.get_node_status()
     return octobot_node.models.Node(**status)
 
 
 @router.get("/config")
-def get_node_config() -> typing.Any:
+def get_node_config(current_user: CurrentUser) -> typing.Any:
     return {
         "node_type": "master" if octobot_node.config.settings.IS_MASTER_MODE else "standalone",
         "use_dedicated_log_file_per_automation": octobot_node.config.settings.USE_DEDICATED_LOG_FILE_PER_AUTOMATION,
         "tasks_encryption_enabled": octobot_node.config.settings.tasks_encryption_enabled,
+        "server_encryption_env_vars": octobot_node.constants.TASKS_ENCRYPTION_ENV_VARS,
     }
 
 
 @router.patch("/config")
-def update_node_config(config: dict) -> typing.Any:
-    if "node_type" in config:
-        octobot_node.config.settings.IS_MASTER_MODE = config["node_type"] == "master"
-    if "use_dedicated_log_file_per_automation" in config:
-        value = bool(config["use_dedicated_log_file_per_automation"])
-        octobot_node.config.settings.USE_DEDICATED_LOG_FILE_PER_AUTOMATION = value
-        if value:
+def update_node_config(config: NodeConfigUpdate, current_user: CurrentUser) -> typing.Any:
+    if config.node_type is not None:
+        octobot_node.config.settings.IS_MASTER_MODE = config.node_type == "master"
+    if config.use_dedicated_log_file_per_automation is not None:
+        octobot_node.config.settings.USE_DEDICATED_LOG_FILE_PER_AUTOMATION = config.use_dedicated_log_file_per_automation
+        if config.use_dedicated_log_file_per_automation:
             octobot_node.scheduler.scheduler.Scheduler._setup_workflow_logging()
         else:
             _remove_context_based_file_handlers()
-    return get_node_config()
+    return get_node_config(current_user)
 
 
 def _remove_context_based_file_handlers() -> None:

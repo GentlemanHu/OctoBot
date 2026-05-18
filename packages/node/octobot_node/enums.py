@@ -24,5 +24,15 @@ class TaskResultKeys(enum.Enum):
     METADATA = "metadata"
 
 
+class AutomationWorkflowActionTypes(enum.Enum):
+    USER_ACTIONS = "user_actions"
+    TRADING_SIGNAL = "trading_signal"
+    FORCED_TRIGGER = "forced_trigger"
+
+
+class AutomationWorkflowMessageTopics(enum.Enum):
+    ACTIONS_UPDATE = "actions_update"
+
+
 class SchedulerQueues(enum.Enum):
     AUTOMATION_WORKFLOW_QUEUE = "automation_workflow_queue"

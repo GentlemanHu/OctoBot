@@ -17,92 +17,44 @@
 import pytest
 import mock
 
+import octobot_node.scheduler.octobot_flow_client as octobot_flow_client
 from octobot_node.scheduler.task_context import encrypted_task
 from octobot_node.models import Task
-from octobot_node.enums import TaskResultKeys
 
 
 class TestEncryptedTask:
     def test_encrypted_task_no_encryption_keys(self) -> None:
         mock_settings = mock.Mock()
-        mock_settings.TASKS_INPUTS_RSA_PRIVATE_KEY = None
-        mock_settings.TASKS_INPUTS_ECDSA_PUBLIC_KEY = None
-        mock_settings.TASKS_OUTPUTS_RSA_PUBLIC_KEY = None
-        mock_settings.TASKS_OUTPUTS_ECDSA_PRIVATE_KEY = None
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = None
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = None
 
         with mock.patch("octobot_node.config.settings", mock_settings):
             task = Task(
                 name="test_task",
                 content="plain content",
-                result=None
             )
             original_content = task.content
 
             with encrypted_task(task):
                 # Content should remain unchanged
                 assert task.content == original_content
-                # Can modify task inside context
-                task.result = {"status": "success"}
 
             # Content should still be unchanged after context
             assert task.content == original_content
-            assert task.result == {"status": "success"}
-
-    def test_encrypted_task_full_encryption_decryption(self) -> None:
-        mock_settings = mock.Mock()
-        mock_settings.TASKS_INPUTS_RSA_PRIVATE_KEY = b"input_private_key"
-        mock_settings.TASKS_INPUTS_ECDSA_PUBLIC_KEY = b"input_public_key"
-        mock_settings.TASKS_OUTPUTS_RSA_PUBLIC_KEY = b"output_public_key"
-        mock_settings.TASKS_OUTPUTS_ECDSA_PRIVATE_KEY = b"output_private_key"
-
-        task = Task(
-            name="test_task",
-            content="encrypted_content",
-            content_metadata="input_metadata",
-            result=None
-        )
-        original_content = task.content
-        decrypted_content = "decrypted_content"
-        encrypted_result = "encrypted_result"
-        result_metadata = "result_metadata"
-
-        mock_decrypt = mock.Mock(return_value=decrypted_content)
-        mock_encrypt = mock.Mock(return_value=(encrypted_result, result_metadata))
-        mock_json_dumps = mock.Mock(return_value='{"status": "success"}')
-
-        with mock.patch("octobot_node.config.settings", mock_settings), \
-             mock.patch("octobot_node.scheduler.encryption.decrypt_task_content", mock_decrypt), \
-             mock.patch("octobot_node.scheduler.encryption.encrypt_task_result", mock_encrypt), \
-             mock.patch("octobot_node.scheduler.task_context.json.dumps", mock_json_dumps):
-            with encrypted_task(task):
-                # Content should be decrypted
-                assert task.content == decrypted_content
-                # Set result inside context
-                task.result = {"status": "success"}
-
-            # Content should be restored
-            assert task.content == original_content
-            # Result should be encrypted
-            assert task.result == encrypted_result
-            assert task.result_metadata == result_metadata
 
     def test_encrypted_task_decryption_error(self) -> None:
         mock_settings = mock.Mock()
-        mock_settings.TASKS_INPUTS_RSA_PRIVATE_KEY = b"private_key"
-        mock_settings.TASKS_INPUTS_ECDSA_PUBLIC_KEY = b"public_key"
-        mock_settings.TASKS_OUTPUTS_RSA_PUBLIC_KEY = None
-        mock_settings.TASKS_OUTPUTS_ECDSA_PRIVATE_KEY = None
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = b"private_key"
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = b"public_key"
 
         task = Task(
             name="test_task",
             content="encrypted_content",
             content_metadata="metadata",
-            result=None
         )
         original_content = task.content
-        decryption_error = ValueError("Decryption failed")
 
-        mock_decrypt = mock.Mock(side_effect=decryption_error)
+        mock_decrypt = mock.Mock(side_effect=ValueError("Decryption failed"))
         mock_logger = mock.Mock()
 
         with mock.patch("octobot_node.config.settings", mock_settings), \
@@ -111,48 +63,15 @@ class TestEncryptedTask:
             with encrypted_task(task):
                 # Content should remain unchanged on error
                 assert task.content == original_content
-                # Set a result
-                task.result = {"status": "success"}
 
             # Content should still be original
             assert task.content == original_content
-            # Result should be set to error format
-            assert task.result[TaskResultKeys.STATUS.value] == "failed"
-            assert task.result[TaskResultKeys.TASK.value] == {"name": "test_task"}
-            assert task.result[TaskResultKeys.RESULT.value] == {}
-            assert task.result[TaskResultKeys.ERROR.value] == str(decryption_error)
             mock_logger.error.assert_called_once()
-
-    def test_encrypted_task_result_none(self) -> None:
-        mock_settings = mock.Mock()
-        mock_settings.TASKS_INPUTS_RSA_PRIVATE_KEY = None
-        mock_settings.TASKS_INPUTS_ECDSA_PUBLIC_KEY = None
-        mock_settings.TASKS_OUTPUTS_RSA_PUBLIC_KEY = b"public_key"
-        mock_settings.TASKS_OUTPUTS_ECDSA_PRIVATE_KEY = b"private_key"
-
-        task = Task(
-            name="test_task",
-            content="plain content",
-            result=None
-        )
-
-        mock_encrypt = mock.Mock()
-
-        with mock.patch("octobot_node.config.settings", mock_settings), \
-             mock.patch("octobot_node.scheduler.encryption.encrypt_task_result", mock_encrypt):
-            with encrypted_task(task):
-                # Don't set result
-                pass
-
-            # Encryption should not be called when result is None
-            mock_encrypt.assert_not_called()
 
     def test_encrypted_task_exception_during_context(self) -> None:
         mock_settings = mock.Mock()
-        mock_settings.TASKS_INPUTS_RSA_PRIVATE_KEY = b"private_key"
-        mock_settings.TASKS_INPUTS_ECDSA_PUBLIC_KEY = b"public_key"
-        mock_settings.TASKS_OUTPUTS_RSA_PUBLIC_KEY = None
-        mock_settings.TASKS_OUTPUTS_ECDSA_PRIVATE_KEY = None
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = b"private_key"
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = b"public_key"
 
         task = Task(
             name="test_task",
@@ -176,3 +95,119 @@ class TestEncryptedTask:
 
             # Content should be restored even after exception
             assert task.content == original_content
+
+    def test_encrypted_task_to_update_result_with_description_encrypts_and_clears(self) -> None:
+        mock_settings = mock.Mock()
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = None
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = None
+
+        job_description = octobot_flow_client.OctoBotActionsJobDescription(
+            state={}, auth_details={}, params={}
+        )
+        processed_action = mock.Mock()
+        actions_dag = mock.Mock()
+        to_update_result = octobot_flow_client.OctoBotActionsJobResult(
+            processed_actions=[processed_action],
+            next_actions_description=job_description,
+            actions_dag=actions_dag,
+        )
+        mock_encrypt = mock.Mock(return_value=("encrypted_payload", "encryption_meta"))
+
+        with mock.patch("octobot_node.config.settings", mock_settings), \
+             mock.patch(
+                 "octobot_node.scheduler.task_context.encryption.get_next_encrypted_if_needed_content_and_metadata",
+                 mock_encrypt,
+             ):
+            task = Task(name="test_task", content="plain")
+            with encrypted_task(task, to_update_result=to_update_result):
+                pass
+
+        mock_encrypt.assert_called_once_with(
+            job_description.to_dict(include_default_values=False)
+        )
+        assert to_update_result.maybe_encrypted_next_actions_description == "encrypted_payload"
+        assert to_update_result.next_actions_description_encryption_metadata == "encryption_meta"
+        assert to_update_result.next_actions_description is None
+        assert to_update_result.processed_actions == []
+        assert to_update_result.actions_dag is None
+
+    def test_encrypted_task_to_update_result_without_description_clears_sensitive_fields(self) -> None:
+        mock_settings = mock.Mock()
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = None
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = None
+
+        processed_action = mock.Mock()
+        actions_dag = mock.Mock()
+        to_update_result = octobot_flow_client.OctoBotActionsJobResult(
+            processed_actions=[processed_action],
+            next_actions_description=None,
+            actions_dag=actions_dag,
+        )
+        mock_encrypt = mock.Mock()
+
+        with mock.patch("octobot_node.config.settings", mock_settings), \
+             mock.patch(
+                 "octobot_node.scheduler.task_context.encryption.get_next_encrypted_if_needed_content_and_metadata",
+                 mock_encrypt,
+             ):
+            task = Task(name="test_task", content="plain")
+            with encrypted_task(task, to_update_result=to_update_result):
+                pass
+
+        mock_encrypt.assert_not_called()
+        assert to_update_result.maybe_encrypted_next_actions_description is None
+        assert to_update_result.next_actions_description_encryption_metadata is None
+        assert to_update_result.next_actions_description is None
+        assert to_update_result.processed_actions == []
+        assert to_update_result.actions_dag is None
+
+    def test_encrypted_task_to_update_result_runs_finally_after_exception(self) -> None:
+        mock_settings = mock.Mock()
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = None
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = None
+
+        job_description = octobot_flow_client.OctoBotActionsJobDescription(
+            state={}, auth_details={}, params={}
+        )
+        to_update_result = octobot_flow_client.OctoBotActionsJobResult(
+            processed_actions=[mock.Mock()],
+            next_actions_description=job_description,
+            actions_dag=mock.Mock(),
+        )
+        mock_encrypt = mock.Mock(return_value=("enc", "meta"))
+
+        with mock.patch("octobot_node.config.settings", mock_settings), \
+             mock.patch(
+                 "octobot_node.scheduler.task_context.encryption.get_next_encrypted_if_needed_content_and_metadata",
+                 mock_encrypt,
+             ):
+            task = Task(name="test_task", content="plain")
+            with pytest.raises(RuntimeError, match="inner"):
+                with encrypted_task(task, to_update_result=to_update_result):
+                    raise RuntimeError("inner")
+
+        assert to_update_result.maybe_encrypted_next_actions_description == "enc"
+        assert to_update_result.next_actions_description_encryption_metadata == "meta"
+        assert to_update_result.processed_actions == []
+
+    def test_encrypted_task_per_task_ecdsa_key_takes_precedence(self) -> None:
+        mock_settings = mock.Mock()
+        mock_settings.TASKS_SERVER_RSA_PRIVATE_KEY = b"server_rsa_priv"
+        mock_settings.TASKS_USER_ECDSA_PUBLIC_KEY = b"env_global_key"
+
+        task = Task(
+            name="test_task",
+            content="encrypted_content",
+            content_metadata="metadata",
+            user_ecdsa_public_key="per_task_key",
+        )
+        mock_decrypt = mock.Mock(return_value="decrypted_content")
+
+        with mock.patch("octobot_node.config.settings", mock_settings), \
+             mock.patch("octobot_node.scheduler.encryption.decrypt_task_content", mock_decrypt):
+            with encrypted_task(task):
+                assert task.content == "decrypted_content"
+
+        mock_decrypt.assert_called_once_with(
+            "encrypted_content", "metadata", user_ecdsa_public_key=b"per_task_key"
+        )

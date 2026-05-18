@@ -15,6 +15,7 @@
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
 import asyncio
+import typing
 
 import octobot_commons.tree as commons_tree
 
@@ -55,7 +56,8 @@ class ExchangeChannelProducer(producers.Producer):
 
     def __init__(self, channel):
         super().__init__(channel)
-        self.logger = logging.get_logger(f"{self.__class__.__name__}[{channel.exchange_manager.exchange_name}]")
+        self.channel: ExchangeChannel = typing.cast(ExchangeChannel, self.channel)
+        self.logger = logging.get_logger(f"{self.__class__.__name__}[{self.channel.exchange_manager.exchange_name}]")
         self.single_update_task = None
 
     async def fetch_and_push(self):
@@ -73,6 +75,17 @@ class ExchangeChannelProducer(producers.Producer):
             ):
                 return False
         return True
+
+
+class IndirectExchangeChannelProducer(ExchangeChannelProducer):
+    """
+    An indirect ExchangeChannelProducer is not fetching data directly but relying on another channel instead
+    """
+    async def subscribe(self) -> None:
+        """
+        Subscribe to primary channels, should be implemented by indirect producers
+        """
+        raise NotImplementedError("subscribe() is not implemented")
 
 
 class ExchangeChannel(channels.Channel):

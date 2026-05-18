@@ -480,6 +480,7 @@ class MarketMakingTradingModeProducer(trading_modes.AbstractTradingModeProducer)
 
     def __init__(self, channel, config, trading_mode, exchange_manager):
         super().__init__(channel, config, trading_mode, exchange_manager)
+        self.trading_mode: MarketMakingTradingMode = typing.cast(MarketMakingTradingMode, trading_mode)
         # no state for this evaluator: always neutral
         self.state = trading_enums.EvaluatorStates.NEUTRAL
 
@@ -1262,6 +1263,9 @@ class MarketMakingTradingModeProducer(trading_modes.AbstractTradingModeProducer)
         return False
 
     async def on_new_reference_price(self, reference_price: decimal.Decimal) -> bool:
+        """
+        Returns True if market making orders should be updated.
+        """
         trigger = False
         open_orders = self.get_market_making_orders()
         buy_orders = [

@@ -32,6 +32,7 @@ import copy
 import octobot_commons.enums
 import octobot_commons.tree as commons_tree
 import octobot_commons.symbols as commons_symbols
+import octobot_commons.logging as logging
 import octobot_commons.html_util as html_util
 
 import octobot_trading
@@ -430,6 +431,9 @@ class CCXTConnector(abstract_exchange.AbstractExchange):
         except Exception as e:
             self.logger.error(f"Fail to get market status of {symbol}: {html_util.get_html_summary_if_relevant(e)}")
             return {}
+
+    def supports_fetching_balance(self) -> bool:
+        return self.client.has['fetchBalance']
 
     @ccxt_client_util.converted_ccxt_common_errors
     async def get_balance(self, **kwargs: dict):
@@ -963,8 +967,10 @@ class CCXTConnector(abstract_exchange.AbstractExchange):
                     return enums.OrderStatus.PENDING_CANCEL
                 # cancel command worked but order is still existing and is not open or canceled. unhandled case
                 # log error and consider it canceling. order states will manage the
-                self.logger.error(f"Unexpected order status after cancel for order: {cancelled_order}. "
-                                  f"Considered as {enums.OrderStatus.PENDING_CANCEL.value}")
+                self.logger.error(
+                    f"Unexpected order status after cancel for order: {logging.get_private_minimized_message_if_necessary(cancelled_order)}. "
+                    f"Considered as {enums.OrderStatus.PENDING_CANCEL.value}"
+                )
                 return enums.OrderStatus.PENDING_CANCEL
             except ccxt.OrderNotFound:
                 # Order is not found: it has successfully been cancelled (some exchanges don't allow to

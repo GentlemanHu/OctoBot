@@ -29,7 +29,7 @@ jobs:
           architecture: ${{ matrix.arch }}
 
       - name: Install Pants
-        uses: pantsbuild/actions/init-pants@v10
+        uses: pantsbuild/actions/init-pants@v11
         with:
           gha-cache-key: ${{ runner.os }}-pants-build
           named-caches-hash: ${{ hashFiles('pants.toml') }}
@@ -82,6 +82,8 @@ jobs:
           - packages/evaluators
           - packages/node
           - packages/flow
+          - packages/copy
+          - packages/protocol
           - packages/services
           - packages/sync
           - packages/tentacles_manager
@@ -89,7 +91,7 @@ jobs:
           - packages/trading_backend
 
     env:
-      USES_TENTACLES: ${{ matrix.package == 'octobot' || matrix.package == 'packages/node' || matrix.package == 'packages/flow' }}
+      USES_TENTACLES: ${{ matrix.package == 'octobot' || matrix.package == 'packages/node' || matrix.package == 'packages/flow' || matrix.package == 'packages/copy' }}
 
     steps:
     - uses: actions/checkout@v6
@@ -108,6 +110,12 @@ jobs:
       with:
         python-version: ${{ matrix.version }}
         architecture: ${{ matrix.arch }}
+
+    - name: Set up Node.js
+      if: matrix.package == 'octobot'
+      uses: actions/setup-node@v6
+      with:
+        node-version: 22
 
     - name: Download build wheel artifact
       uses: actions/download-artifact@v8
@@ -146,6 +154,8 @@ jobs:
 
     - name: Install tentacles
       if: env.USES_TENTACLES == 'true'
+      env:
+        ALLOW_UNSIGNED_TENTACLES: "true"
       run: |
         mkdir -p output
         OctoBot tentacles -d packages/tentacles -p any_platform.zip
@@ -157,7 +167,7 @@ jobs:
           pytest tests -n auto --dist loadfile
           pytest --ignore=tentacles/Trading/Exchange tentacles -n auto --dist loadfile
         else
-          if [ "${{ matrix.package }}" = "packages/node" ] || [ "${{ matrix.package }}" = "packages/flow" ]; then
+          if [ "${{ matrix.package }}" = "packages/node" ] || [ "${{ matrix.package }}" = "packages/flow" ] || [ "${{ matrix.package }}" = "packages/copy" ]; then
             echo "Running tests from root dir to allow tentacles import"
             PYTHONPATH=.:$PYTHONPATH pytest ${{ matrix.package }}/tests -n auto --dist loadfile
           else
@@ -165,7 +175,11 @@ jobs:
             if [ "${{ matrix.package }}" = "packages/tentacles_manager" ]; then
               pytest tests
             else
-              pytest tests -n auto --dist loadfile
+              if [ "${{ matrix.package }}" = "packages/protocol" ]; then
+                pytest test
+              else
+                pytest tests -n auto --dist loadfile
+              fi
             fi
           fi
         fi
@@ -177,6 +191,16 @@ jobs:
       run: |
         cd ${{ matrix.package }}
         pytest tests --backend=rust -v
+
+    - name: Run frontend tests
+      if: matrix.package == 'octobot'
+      run: |
+        find packages/tentacles -name "package.json" -not -path "*/node_modules/*" | while read pkg; do
+          cd "$(dirname "$pkg")"
+          npm ci
+          npm test
+          cd - > /dev/null
+        done
 
   docker:
     name: Build & Push Docker images
@@ -258,6 +282,8 @@ jobs:
           path: dist/
 
       - name: Install OctoBot & tentacles
+        env:
+          ALLOW_UNSIGNED_TENTACLES: "true"
         run: |
           pip3 install -r dev_requirements.txt
           pip3 install dist/octobot-*.whl
@@ -392,6 +418,7 @@ jobs:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
           CLOUDFLARE_ZONE: ${{ secrets.CLOUDFLARE_ZONE }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          TENTACLES_SIGNING_PRIVATE_KEY: ${{ secrets.TENTACLES_SIGNING_PRIVATE_KEY }}
         run: |
           echo "Publishing tentacles for tag: ${GITHUB_REF_NAME}"
           cp packages/tentacles/metadata.yaml ../metadata.yaml
@@ -409,6 +436,7 @@ jobs:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
           CLOUDFLARE_ZONE: ${{ secrets.CLOUDFLARE_ZONE }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          TENTACLES_SIGNING_PRIVATE_KEY: ${{ secrets.TENTACLES_SIGNING_PRIVATE_KEY }}
         run: |
           cp packages/tentacles/metadata.yaml ../metadata.yaml
           sed -i "s/VERSION_PLACEHOLDER/latest/g" ../metadata.yaml
@@ -425,11 +453,57 @@ jobs:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
           CLOUDFLARE_ZONE: ${{ secrets.CLOUDFLARE_ZONE }}
           S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+          TENTACLES_SIGNING_PRIVATE_KEY: ${{ secrets.TENTACLES_SIGNING_PRIVATE_KEY }}
         run: |
           cp packages/tentacles/metadata.yaml ../metadata.yaml
           sed -i "s/VERSION_PLACEHOLDER/stable/g" ../metadata.yaml
           OctoBot tentacles -m "../metadata.yaml" -d "../new_tentacles" -p "../any_platform.zip" -upe ${{ secrets.TENTACLES_OFFICIAL_PATH }}/packages/full/${{ secrets.TENTACLES_REPOSITORY_NAME }}/
           python packages/tentacles/scripts/clear_cloudflare_cache.py stable
+
+  docs:
+    name: Build & Deploy Docs
+    needs: [build, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install dependencies
+        run: cd docs && npm ci
+
+      - name: Build docs
+        run: cd docs && npm run build
+
+      - name: Upload version (preview URL)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          wranglerVersion: "4"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: docs
+          command: versions upload
+
+      - name: Deploy to production
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          wranglerVersion: "4"
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: docs
+          command: versions deploy --yes
 
   version:
     needs: [ build, tests ]
@@ -673,42 +747,6 @@ jobs:
           asset_name: OctoBot_macos_arm64
           asset_content_type: application/x-binary
 
-  sync:
-    name: Deploy Sync Server
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/')
-    needs: [docker]
-    environment:
-      name: ${{ startsWith(github.ref, 'refs/tags/') && 'Production - Sync Server' || github.ref == 'refs/heads/master' && 'Staging - Sync Server' || 'Development - Sync Server' }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Ansible
-        run: pip install ansible
-
-      - name: Install Galaxy requirements
-        working-directory: infra/sync/ansible
-        run: ansible-galaxy install -r requirements.yml
-
-      - name: Set up SSH key
-        run: |
-          mkdir -p infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh/id_ed25519
-          chmod 600 infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh/id_ed25519
-
-      - name: Deploy to ${{ vars.ANSIBLE_ENV }}
-        working-directory: infra/sync/ansible
-        env:
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
-          ANSIBLE_HOST_KEY_CHECKING: "false"
-        run: |
-          ansible-playbook playbooks/deploy-octobot-sync.yml -i inventories/${{ vars.ANSIBLE_ENV }}
-
-      - name: Clean up SSH key
-        if: always()
-        run: rm -f infra/sync/ansible/inventories/${{ vars.ANSIBLE_ENV }}/.ssh/id_ed25519
-
   notify:
     if: ${{ failure() }}
     needs:
@@ -719,7 +757,7 @@ jobs:
       - tentacles
       - release
       - version
-      - sync
+      - docs
     uses: Drakkar-Software/.github/.github/workflows/failure_notify_workflow.yml@master
     secrets:
       DISCORD_GITHUB_WEBHOOK: ${{ secrets.DISCORD_GITHUB_WEBHOOK }}

@@ -6,7 +6,7 @@ import octobot_commons.constants as common_constants
 import octobot_trading.blockchain_wallets as blockchain_wallets
 import octobot_trading.constants as trading_constants
 
-import octobot_flow
+import octobot_flow.jobs
 import octobot_flow.entities
 import octobot_flow.enums
 
@@ -33,8 +33,8 @@ async def test_execute_actions_with_market_orders_and_existing_state(
     ):
         # test with parsed global state
         automation_state = octobot_flow.entities.AutomationState.from_dict(global_state)
-        automation_state.update_automation_actions(resolved_actions(actions_with_market_orders))
-        async with octobot_flow.AutomationJob(automation_state, [], auth_details) as automations_job:
+        automation_state.upsert_automation_actions(resolved_actions(actions_with_market_orders))
+        async with octobot_flow.jobs.AutomationJob(automation_state, [], [], auth_details) as automations_job:
             await automations_job.run()
 
         # check bot actions execution
@@ -57,7 +57,7 @@ async def test_execute_actions_with_market_orders_and_existing_state(
         # no next execution time scheduled: trigger immediately
         assert after_execution_dump["automation"]["execution"]["current_execution"]["scheduled_to"] == 0
         # check portfolio content
-        after_execution_portfolio_content = after_execution_dump["automation"]["client_exchange_account_elements"]["portfolio"]["content"]
+        after_execution_portfolio_content = after_execution_dump["automation"]["exchange_account_elements"]["portfolio"]["content"]
         assert isinstance(after_execution_dump, dict)
         assert list(sorted(after_execution_portfolio_content.keys())) == ["BTC", "ETH", "USDT"]
         for asset_type in [common_constants.PORTFOLIO_AVAILABLE, common_constants.PORTFOLIO_TOTAL]:
