@@ -31,7 +31,6 @@ import octobot_trading.util as util
 import octobot_trading.errors as errors
 import octobot_trading.storage as storage
 import octobot_trading.exchanges.config.exchange_credentials_data as exchange_credentials_data
-import trading_backend.exchanges
 
 
 if typing.TYPE_CHECKING:
@@ -77,7 +76,6 @@ class ExchangeManager(util.Initializable):
 
         self.trader: exchanges.Trader = None # type: ignore
         self.exchange: exchanges.RestExchange = None # type: ignore
-        self.exchange_backend: trading_backend.exchanges.Exchange = None # type: ignore
         self.is_broker_enabled: bool = False
         self.trading_modes: list = []
 
@@ -185,11 +183,6 @@ class ExchangeManager(util.Initializable):
         self.exchange_config = None # type: ignore
         self.exchange_personal_data = None # type: ignore
         self.exchange_symbols_data = None # type: ignore
-        if self.exchange_backend is not None:
-            try:
-                self.exchange_backend.stop()
-            except Exception as err:
-                self.logger.exception(err, True, f"Error when stopping exchange_backend: {err}")
         if enable_logs:
             self.logger.debug("Stopping trader ...")
         if self.trader is not None:
@@ -220,6 +213,7 @@ class ExchangeManager(util.Initializable):
         """
         await self.trader.initialize()
         self.exchange_symbols_data.initialize_from_exchange_data(exchange_data, price_by_symbol)
+        await self.exchange_symbols_data.initialize_candles_from_exchange_data(exchange_data)
         self.exchange_personal_data.portfolio_manager.portfolio_value_holder.initialize_from_exchange_data(
             exchange_data, price_by_symbol
         )
@@ -277,8 +271,8 @@ class ExchangeManager(util.Initializable):
             self.logger.warning(f"Exchange {self.exchange.name} is currently disabled")
             return False
 
-    def get_exchange_symbol(self, symbol):
-        return self.exchange.get_pair_from_exchange(symbol)
+    def get_exchange_symbol(self, symbol, error_on_missing=True):
+        return self.exchange.get_pair_from_exchange(symbol, error_on_missing=error_on_missing)
 
     def get_exchange_quote_and_base(self, symbol):
         return self.exchange.get_split_pair_from_exchange(symbol)
@@ -298,7 +292,9 @@ class ExchangeManager(util.Initializable):
         if self.exchange.symbols and self.exchange.time_frames:
             self.client_symbols = list(self.exchange.symbols)
             self.client_time_frames = list(self.exchange.time_frames)
-        elif not self.exchange_only:
+        elif not self.exchange_only and self.exchange.get_option_value(
+            enums.ExchangeClientOptions.SUPPORTS_ALL_SYMBOLS_LISTING
+        ):
             err_message = "Failed to load exchange symbols or time frames"
             self.logger.error(err_message)
             self._raise_exchange_load_error(err_message)
@@ -309,6 +305,10 @@ class ExchangeManager(util.Initializable):
                               f"{symbol} exists on {self.exchange.name}")
             return False
         return symbol in self.client_symbols
+
+    async def load_markets_for_symbols_and_refresh_client_symbols(self, symbols: list[str]) -> None:
+        await self.exchange.load_markets_for_symbols(symbols)
+        self.client_symbols = list(self.exchange.symbols)
 
     def time_frame_exists(self, time_frame):
         if not self.client_time_frames:

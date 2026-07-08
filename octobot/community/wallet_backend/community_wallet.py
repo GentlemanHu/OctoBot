@@ -22,6 +22,7 @@ import threading
 import typing
 
 import octobot_commons.dataclasses as commons_dataclasses
+import octobot_sync.auth as sync_auth
 import octobot_sync.chain as sync_chain
 from octobot.community.wallet_backend.errors import (
     AdminWalletAlreadyExistsError,
@@ -56,6 +57,7 @@ class WalletEntry(commons_dataclasses.FlexibleDataclass):
     is_admin: bool = False
     private_key: str = ""
     passphrase_hash: str = ""
+    seed: typing.Optional[str] = None
 
 
 def _hash_passphrase(passphrase: str) -> str:
@@ -105,6 +107,10 @@ class WalletBackend:
                 return entry
         return None
 
+    def list_wallet_entries(self) -> list[WalletEntry]:
+        """Return all wallet entries, including private key and passphrase hash."""
+        return self._get_node_wallets_list()
+
     def list_wallets(self) -> list[WalletInfo]:
         """Return public wallet info (no key material)."""
         return [
@@ -118,8 +124,8 @@ class WalletBackend:
         passphrase: str,
         is_admin: bool = False,
     ) -> sync_chain.Wallet:
-        wallet = sync_chain.create_evm_wallet()
-        return self._add_wallet_entry(wallet.private_key, wallet.address, name, passphrase, is_admin)
+        wallet, mnemonic = sync_chain.create_evm_wallet_with_mnemonic()
+        return self._add_wallet_entry(wallet.private_key, wallet.address, name, passphrase, is_admin, seed=mnemonic)
 
     def import_wallet(
         self,
@@ -134,6 +140,19 @@ class WalletBackend:
             raise InvalidPrivateKeyError(f"Invalid EVM private key: {err}") from err
         return self._add_wallet_entry(private_key, address, name, passphrase, is_admin)
 
+    def import_wallet_from_seed(
+        self,
+        seed: str,
+        passphrase: str,
+        name: typing.Optional[str],
+        is_admin: bool = False,
+    ) -> sync_chain.Wallet:
+        try:
+            wallet = sync_chain.wallet_from_mnemonic(seed.strip())
+        except Exception as err:
+            raise InvalidPrivateKeyError(f"Invalid seed phrase: {err}") from err
+        return self._add_wallet_entry(wallet.private_key, wallet.address, name, passphrase, is_admin, seed=seed.strip())
+
     def _add_wallet_entry(
         self,
         private_key: str,
@@ -141,6 +160,7 @@ class WalletBackend:
         name: typing.Optional[str],
         passphrase: str,
         is_admin: bool,
+        seed: typing.Optional[str] = None,
     ) -> sync_chain.Wallet:
         if len(passphrase) < 8:
             raise PassphraseTooShortError("Passphrase must be at least 8 characters")
@@ -157,6 +177,7 @@ class WalletBackend:
                 is_admin=is_admin,
                 private_key=private_key.removeprefix("0x"),
                 passphrase_hash=_hash_passphrase(passphrase),
+                seed=seed,
             )
             node_wallets.append(entry)
             self._save_node_wallets_list(node_wallets)
@@ -190,12 +211,35 @@ class WalletBackend:
             raise InvalidPassphraseError("Invalid passphrase")
         return self._wallet_from_entry(entry)
 
+    def decrypt_wallet_entry_by_address(self, address: str, passphrase: str) -> WalletEntry:
+        entry = self._find_wallet_entry(address)
+        if entry is None:
+            raise WalletNotFoundError(f"Wallet {address} not found")
+        if not _verify_passphrase_hash(passphrase, entry.passphrase_hash):
+            raise InvalidPassphraseError("Invalid passphrase")
+        return entry
+
     def get_wallet_for_bot(self, address: str) -> sync_chain.Wallet:
         """Return wallet without passphrase verification — for bot auto-unlock at startup."""
         entry = self._find_wallet_entry(address)
         if entry is None:
             raise WalletNotFoundError(f"Wallet {address} not found")
         return self._wallet_from_entry(entry)
+
+    def get_wallet_by_user_id(self, user_id: str) -> sync_chain.Wallet:
+        """Return the wallet whose derived Starfish ``user_id`` matches *user_id*.
+
+        Under cap-cert auth the storage identity is the Starfish user_id
+        (sha256(rootEdPub)[:32]), not the EVM address — the address never
+        reaches the wire. Resolve by re-deriving each local wallet's user_id
+        with the SAME bootstrap challenge the client uses
+        (octobot_sync.auth.derive_user_id). Linear in #local wallets, which is
+        small; deterministic, so no cache is required.
+        """
+        for entry in self._get_node_wallets_list():
+            if sync_auth.derive_user_id(entry.private_key) == user_id:
+                return self._wallet_from_entry(entry)
+        raise WalletNotFoundError(f"Wallet not found for user_id: {user_id}")
 
     def remove_wallet(self, address: str) -> None:
         normalized = address.lower()

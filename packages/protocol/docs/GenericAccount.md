@@ -6,7 +6,7 @@ GenericAccount
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**assets** | [**List[Asset]**](Asset.md) |  | [optional] 
+**account_type** | [**AccountType**](AccountType.md) | generic | 
 
 ## Example
 

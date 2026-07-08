@@ -35,17 +35,11 @@ class TestGenericAccount(unittest.TestCase):
         model = GenericAccount()
         if include_optional:
             return GenericAccount(
-                assets = [
-                    octobot_protocol.models.asset.Asset(
-                        symbol = '', 
-                        total = 1.337, 
-                        available = 1.337, 
-                        value = 1.337, 
-                        unit = '', )
-                    ]
+                account_type = 'generic'
             )
         else:
             return GenericAccount(
+                account_type = 'generic',
         )
         """
 

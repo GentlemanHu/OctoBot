@@ -13,14 +13,39 @@
 #
 #  You should have received a copy of the GNU General Public
 #  License along with OctoBot. If not, see <https://www.gnu.org/licenses/>.
+import asyncio
+import time
+import typing
+
 import octobot_flow.entities
+import octobot_node.constants as node_constants
 import octobot_node.enums
+import octobot_node.errors as node_errors
 import octobot_node.models
 import octobot_node.scheduler.workflows_util as workflows_util
 import octobot_node.scheduler.workflows.params as params
+import octobot_protocol.models as protocol_models
 
 
-async def trigger_task(task: octobot_node.models.Task) -> bool:
+async def trigger_user_action_workflow(
+    user_action: protocol_models.UserAction,
+    user_id: str,
+) -> str:
+    import octobot_node.scheduler  # avoid circular import
+    if not octobot_node.scheduler.is_initialized():
+        raise RuntimeError("Scheduler is not initialized")
+    import octobot_node.scheduler.workflows.user_action_workflow as user_action_workflow
+    handle = await octobot_node.scheduler.SCHEDULER.USER_ACTION_QUEUE.enqueue_async(
+        user_action_workflow.UserActionWorkflow.execute_user_action,
+        inputs=params.UserActionWorkflowInputs(
+            user_id=user_id, user_action=user_action,
+        ).to_dict(include_default_values=False)
+    )
+    return handle.workflow_id
+
+async def trigger_task(
+    task: octobot_node.models.Task, target_workflow_id: typing.Optional[str] = None
+) -> str:
     import octobot_node.scheduler  # avoid circular import
     if not octobot_node.scheduler.is_initialized():
         raise RuntimeError("Scheduler is not initialized")
@@ -28,27 +53,26 @@ async def trigger_task(task: octobot_node.models.Task) -> bool:
     handle = None
     # enqueue workflow instead of starting it to dispatch them to multiple workers if possible
     if task.type == octobot_node.models.TaskType.EXECUTE_ACTIONS.value:
-        handle = await octobot_node.scheduler.SCHEDULER.AUTOMATION_WORKFLOW_QUEUE.enqueue_async(
-            automation_workflow.AutomationWorkflow.execute_automation,
-            inputs=params.AutomationWorkflowInputs(task=task).to_dict(include_default_values=False)
-        )
+        inputs = params.AutomationWorkflowInputs(task=task).to_dict(include_default_values=False)
+        if target_workflow_id:
+            with octobot_node.scheduler.SCHEDULER.SetWorkflowID(target_workflow_id):
+                handle = await octobot_node.scheduler.SCHEDULER.AUTOMATION_WORKFLOW_QUEUE.enqueue_async(
+                    automation_workflow.AutomationWorkflow.execute_automation,
+                    inputs=inputs
+                )
+        else:
+            handle = await octobot_node.scheduler.SCHEDULER.AUTOMATION_WORKFLOW_QUEUE.enqueue_async(
+                automation_workflow.AutomationWorkflow.execute_automation,
+                inputs=inputs
+            )
     else:
         raise ValueError(f"Unsupported task type: {task.type}")
-    return handle is not None
+    return handle.workflow_id
 
 
 async def send_actions_to_automation(actions: list[dict], automation_id: str):
-    import octobot_node.scheduler  # avoid circular import
     workflow_status = await workflows_util.get_automation_workflow_status(automation_id)
-    payload = params.AutomationWorkflowActionUpdate(
-        actions_type=octobot_node.enums.AutomationWorkflowActionTypes.USER_ACTIONS.value,
-        actions_details=actions,
-    ).to_dict(include_default_values=False)
-    await octobot_node.scheduler.SCHEDULER.INSTANCE.send_async(
-        workflow_status.workflow_id,
-        payload,
-        topic=octobot_node.enums.AutomationWorkflowMessageTopics.ACTIONS_UPDATE.value,
-    )
+    await send_actions_to_automation_workflow(actions, workflow_status.workflow_id)
 
 
 async def trigger_copier_automation(automation_id: str, trading_signal: octobot_flow.entities.TradingSignal) -> None:
@@ -65,14 +89,99 @@ async def trigger_copier_automation(automation_id: str, trading_signal: octobot_
 
 
 async def send_forced_trigger_to_automation(automation_id: str):
-    import octobot_node.scheduler  # avoid circular import
     workflow_status = await workflows_util.get_automation_workflow_status(automation_id)
+    await send_forced_trigger_to_automation_workflow(workflow_status.workflow_id)
+
+
+async def _send_automation_workflow_action_update(
+    target_workflow_id: str,
+    actions_type: str,
+    actions_details: list[dict],
+) -> None:
+    import octobot_node.scheduler  # avoid circular import
     payload = params.AutomationWorkflowActionUpdate(
-        actions_type=octobot_node.enums.AutomationWorkflowActionTypes.FORCED_TRIGGER.value,
-        actions_details=[],
+        actions_type=actions_type,
+        actions_details=actions_details,
     ).to_dict(include_default_values=False)
     await octobot_node.scheduler.SCHEDULER.INSTANCE.send_async(
-        workflow_status.workflow_id,
+        target_workflow_id,
         payload,
         topic=octobot_node.enums.AutomationWorkflowMessageTopics.ACTIONS_UPDATE.value,
+    )
+
+
+async def send_actions_to_automation_workflow(actions: list[dict], target_workflow_id: str) -> None:
+    await _send_automation_workflow_action_update(
+        target_workflow_id,
+        octobot_node.enums.AutomationWorkflowActionTypes.USER_ACTIONS.value,
+        actions,
+    )
+
+
+async def send_forced_trigger_to_automation_workflow(target_workflow_id: str) -> None:
+    await _send_automation_workflow_action_update(
+        target_workflow_id,
+        octobot_node.enums.AutomationWorkflowActionTypes.FORCED_TRIGGER.value,
+        [],
+    )
+
+
+async def _send_to_active_automation_workflow(
+    parent_automation_id: str,
+    wallet_address: str,
+    actions_type: str,
+    actions_details: list[dict],
+) -> None:
+    """
+    Resolve the latest pending/enqueued child workflow and deliver a priority action update.
+
+    Retries briefly when the active child is between DBOS steps and temporarily absent from
+    pending/enqueued listings.
+    """
+    import octobot_node.scheduler  # avoid circular import
+    if not octobot_node.scheduler.is_initialized():
+        raise RuntimeError("Scheduler is not initialized")
+    scheduler = octobot_node.scheduler.SCHEDULER
+    delivery_deadline = time.monotonic() + node_constants.AUTOMATION_WORKFLOW_ACTIVE_SEND_RETRY_SECONDS
+    while time.monotonic() < delivery_deadline:
+        matching_workflow_ids = await scheduler.resolve_active_automation_workflow_ids_for_parent_id(
+            wallet_address,
+            parent_automation_id,
+        )
+        if matching_workflow_ids:
+            await _send_automation_workflow_action_update(
+                matching_workflow_ids[0],
+                actions_type,
+                actions_details,
+            )
+            return
+        await asyncio.sleep(node_constants.AUTOMATION_WORKFLOW_ACTIVE_SEND_POLL_INTERVAL_SECONDS)
+    raise node_errors.ActiveAutomationWorkflowNotFoundError(
+        f"No active automation workflow for parent id {parent_automation_id!r} "
+        f"(wallet_address={wallet_address!r})."
+    )
+
+
+async def send_actions_to_active_automation(
+    parent_automation_id: str,
+    wallet_address: str,
+    actions: list[dict],
+) -> None:
+    await _send_to_active_automation_workflow(
+        parent_automation_id,
+        wallet_address,
+        octobot_node.enums.AutomationWorkflowActionTypes.USER_ACTIONS.value,
+        actions,
+    )
+
+
+async def send_forced_trigger_to_active_automation(
+    parent_automation_id: str,
+    wallet_address: str,
+) -> None:
+    await _send_to_active_automation_workflow(
+        parent_automation_id,
+        wallet_address,
+        octobot_node.enums.AutomationWorkflowActionTypes.FORCED_TRIGGER.value,
+        [],
     )

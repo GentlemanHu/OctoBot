@@ -46,6 +46,7 @@ import octobot_commons.configuration as commons_configuration
 import octobot_commons.profiles as commons_profiles
 import octobot_trading.enums as trading_enums
 import octobot_sync.client as sync_client
+import octobot_sync.chain as sync_chain
 
 
 def expired_session_retrier(func):
@@ -128,8 +129,7 @@ class CommunityAuthentication(authentication.Authenticator):
 
         self._fetch_account_task: typing.Optional[asyncio.Task] = None
         self._sync_client = None
-        self._sync_address: str = ""
-        self._sync_data_signer = None
+        self._sync_user_id: str = ""
         self._sync_client_lock = threading.Lock()
         self._wallet_backend: wallet_backend.WalletBackend = wallet_backend.WalletBackend(
             self.configuration_storage.sync_storage, self.logger
@@ -638,8 +638,11 @@ class CommunityAuthentication(authentication.Authenticator):
         finally:
             self.initialized_event.set()
 
-    def list_wallets(self) -> list:
+    def list_wallets(self) -> list[wallet_backend.WalletInfo]:
         return self._wallet_backend.list_wallets()
+
+    def list_wallet_entries(self) -> list[wallet_backend.WalletEntry]:
+        return self._wallet_backend.list_wallet_entries()
 
     def is_node_wallet_configured(self) -> bool:
         return bool(self._wallet_backend.list_wallets())
@@ -649,6 +652,9 @@ class CommunityAuthentication(authentication.Authenticator):
 
     def import_wallet(self, private_key: str, passphrase: str, name: typing.Optional[str], is_admin: bool = False):
         return self._wallet_backend.import_wallet(private_key, passphrase, name, is_admin)
+
+    def import_wallet_from_seed(self, seed: str, passphrase: str, name: typing.Optional[str], is_admin: bool = False):
+        return self._wallet_backend.import_wallet_from_seed(seed, passphrase, name, is_admin)
 
     def authenticate_wallet(self, address: str, passphrase: str) -> dict:
         """Verify passphrase and return wallet metadata in a single storage read.
@@ -663,6 +669,9 @@ class CommunityAuthentication(authentication.Authenticator):
 
     def decrypt_wallet_by_address(self, address: str, passphrase: str):
         return self._wallet_backend.decrypt_wallet_by_address(address, passphrase)
+
+    def decrypt_wallet_entry_by_address(self, address: str, passphrase: str):
+        return self._wallet_backend.decrypt_wallet_entry_by_address(address, passphrase)
 
     def remove_wallet(self, address: str) -> None:
         return self._wallet_backend.remove_wallet(address)
@@ -679,8 +688,16 @@ class CommunityAuthentication(authentication.Authenticator):
     def get_sync_client_for_address(self, address: str) -> sync_client.StarfishClient:
         self.init_sync_client_for_wallet(address)
         if self._sync_client is None:
-            raise wallet_backend.WalletNotFoundError("Wallet with address {address} not found")
+            raise wallet_backend.WalletNotFoundError(
+                f"Wallet with address {address} not found"
+            )
         return self._sync_client
+
+    def get_wallet(self, address: str) -> sync_chain.Wallet:
+        return self._wallet_backend.get_wallet_for_bot(address)
+
+    def get_wallet_by_user_id(self, user_id: str) -> sync_chain.Wallet:
+        return self._wallet_backend.get_wallet_by_user_id(user_id)
 
     def init_sync_client_for_wallet(self, address: str) -> None:
         """Initialize the sync client for the given wallet address without passphrase."""
@@ -694,8 +711,8 @@ class CommunityAuthentication(authentication.Authenticator):
                 if not sync_url:
                     self.logger.debug("No sync server URL configured, skipping sync client init")
                     return
-                wallet = self._wallet_backend.get_wallet_for_bot(address)
-                self._sync_client, self._sync_address, self._sync_data_signer = sync_client.create_sync_client(
+                wallet = self.get_wallet(address)
+                self._sync_client, self._sync_user_id = sync_client.create_sync_client(
                     private_key=wallet.private_key,
                     sync_url=sync_url,
                 )
@@ -718,7 +735,7 @@ class CommunityAuthentication(authentication.Authenticator):
             if not wallets:
                 return False
             admin = next((w for w in wallets if w.is_admin), wallets[0])
-            wallet = self._wallet_backend.get_wallet_for_bot(admin.address)
+            wallet = self.get_wallet(admin.address)
             with self._sync_client_lock:
                 if self._sync_client is not None:
                     return True
@@ -728,11 +745,9 @@ class CommunityAuthentication(authentication.Authenticator):
                         "No sync server URL configured, skipping auto sync client init"
                     )
                     return False
-                self._sync_client, self._sync_address, self._sync_data_signer = (
-                    sync_client.create_sync_client(
-                        private_key=wallet.private_key,
-                        sync_url=sync_url,
-                    )
+                self._sync_client, self._sync_user_id = sync_client.create_sync_client(
+                    private_key=wallet.private_key,
+                    sync_url=sync_url,
                 )
             return True
         except wallet_backend.WalletError as e:

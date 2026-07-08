@@ -13,10 +13,12 @@
 #
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
+import tentacles.Services.Interfaces.web_interface.controllers.logs
 import tentacles.Services.Interfaces.web_interface.controllers.distributions.node.dashboard
 
 
 def register(blueprint):
+    tentacles.Services.Interfaces.web_interface.controllers.logs.register(blueprint)
     tentacles.Services.Interfaces.web_interface.controllers.distributions.node.dashboard.register(blueprint)
 
 

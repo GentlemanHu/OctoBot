@@ -17,9 +17,9 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict
-from typing import Any, ClassVar, Dict, List, Optional
-from octobot_protocol.models.asset import Asset
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, ClassVar, Dict, List
+from octobot_protocol.models.account_type import AccountType
 from typing import Optional, Set
 from typing_extensions import Self
 from pydantic_core import to_jsonable_python
@@ -28,8 +28,8 @@ class GenericAccount(BaseModel):
     """
     GenericAccount
     """ # noqa: E501
-    assets: Optional[List[Asset]] = None
-    __properties: ClassVar[List[str]] = ["assets"]
+    account_type: AccountType = Field(description="generic")
+    __properties: ClassVar[List[str]] = ["account_type"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -70,13 +70,6 @@ class GenericAccount(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
-        # override the default output from pydantic by calling `to_dict()` of each item in assets (list)
-        _items = []
-        if self.assets:
-            for _item_assets in self.assets:
-                if _item_assets:
-                    _items.append(_item_assets.to_dict())
-            _dict['assets'] = _items
         return _dict
 
     @classmethod
@@ -89,7 +82,7 @@ class GenericAccount(BaseModel):
             return cls.model_validate(obj)
 
         _obj = cls.model_validate({
-            "assets": [Asset.from_dict(_item) for _item in obj["assets"]] if obj.get("assets") is not None else None
+            "account_type": obj.get("account_type")
         })
         return _obj
 

@@ -93,8 +93,6 @@ from octobot.community.feeds import (
 from octobot.community.errors_upload import (
     init_sentry_tracker,
     flush_tracker,
-    upload_error,
-    share_logs,
 )
 from octobot.community.identifiers_provider import (
     IdentifiersProvider,
@@ -110,6 +108,7 @@ from octobot.community.community_bot import (
 )
 from octobot.community.local_authenticator import (
     get_stateless_configuration,
+    get_user_configuration,
     local_user_authenticator,
     local_anon_user_authenticator,  
 )
@@ -171,9 +170,8 @@ __all__ = [
     "CommunityBot",
     "MissingDeploymentError",
     "MissingProductsSubscriptionError",
-    "upload_error",
-    "share_logs",
     "get_stateless_configuration",
+    "get_user_configuration",
     "local_user_authenticator",
     "local_anon_user_authenticator",
 ]

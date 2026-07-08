@@ -18,12 +18,11 @@ import re  # noqa: F401
 import json
 
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 from typing import Any, ClassVar, Dict, List, Optional
-from octobot_protocol.models.account_type import AccountType
-from octobot_protocol.models.blockchain_account import BlockchainAccount
-from octobot_protocol.models.exchange_account import ExchangeAccount
-from octobot_protocol.models.generic_account import GenericAccount
+from octobot_protocol.models.account_specifics import AccountSpecifics
+from octobot_protocol.models.account_state import AccountState
+from octobot_protocol.models.detailed_assets_for_trading_type import DetailedAssetsForTradingType
 from typing import Optional, Set
 from typing_extensions import Self
 from pydantic_core import to_jsonable_python
@@ -33,16 +32,16 @@ class Account(BaseModel):
     Account
     """ # noqa: E501
     id: StrictStr
-    account_type: AccountType
     name: StrictStr
     is_simulated: StrictBool
     description: Optional[StrictStr] = None
-    created_at: Optional[datetime] = None
+    state: Optional[AccountState] = None
+    created_at: datetime
     updated_at: Optional[datetime] = None
-    exchange_account: Optional[ExchangeAccount] = None
-    blockchain_account: Optional[BlockchainAccount] = None
-    generic_account: Optional[GenericAccount] = None
-    __properties: ClassVar[List[str]] = ["id", "account_type", "name", "is_simulated", "description", "created_at", "updated_at", "exchange_account", "blockchain_account", "generic_account"]
+    authentication_id: Optional[StrictStr] = Field(default=None, description="The id of the account authentication bound to this account")
+    assets: Optional[List[DetailedAssetsForTradingType]] = None
+    specifics: Optional[AccountSpecifics] = None
+    __properties: ClassVar[List[str]] = ["id", "name", "is_simulated", "description", "state", "created_at", "updated_at", "authentication_id", "assets", "specifics"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -83,30 +82,19 @@ class Account(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
-        # override the default output from pydantic by calling `to_dict()` of exchange_account
-        if self.exchange_account:
-            _dict['exchange_account'] = self.exchange_account.to_dict()
-        # override the default output from pydantic by calling `to_dict()` of blockchain_account
-        if self.blockchain_account:
-            _dict['blockchain_account'] = self.blockchain_account.to_dict()
-        # override the default output from pydantic by calling `to_dict()` of generic_account
-        if self.generic_account:
-            _dict['generic_account'] = self.generic_account.to_dict()
-        # set to None if exchange_account (nullable) is None
-        # and model_fields_set contains the field
-        if self.exchange_account is None and "exchange_account" in self.model_fields_set:
-            _dict['exchange_account'] = None
-
-        # set to None if blockchain_account (nullable) is None
-        # and model_fields_set contains the field
-        if self.blockchain_account is None and "blockchain_account" in self.model_fields_set:
-            _dict['blockchain_account'] = None
-
-        # set to None if generic_account (nullable) is None
-        # and model_fields_set contains the field
-        if self.generic_account is None and "generic_account" in self.model_fields_set:
-            _dict['generic_account'] = None
-
+        # override the default output from pydantic by calling `to_dict()` of state
+        if self.state:
+            _dict['state'] = self.state.to_dict()
+        # override the default output from pydantic by calling `to_dict()` of each item in assets (list)
+        _items = []
+        if self.assets:
+            for _item_assets in self.assets:
+                if _item_assets:
+                    _items.append(_item_assets.to_dict())
+            _dict['assets'] = _items
+        # override the default output from pydantic by calling `to_dict()` of specifics
+        if self.specifics:
+            _dict['specifics'] = self.specifics.to_dict()
         return _dict
 
     @classmethod
@@ -120,15 +108,15 @@ class Account(BaseModel):
 
         _obj = cls.model_validate({
             "id": obj.get("id"),
-            "account_type": obj.get("account_type"),
             "name": obj.get("name"),
             "is_simulated": obj.get("is_simulated"),
             "description": obj.get("description"),
+            "state": AccountState.from_dict(obj["state"]) if obj.get("state") is not None else None,
             "created_at": obj.get("created_at"),
             "updated_at": obj.get("updated_at"),
-            "exchange_account": ExchangeAccount.from_dict(obj["exchange_account"]) if obj.get("exchange_account") is not None else None,
-            "blockchain_account": BlockchainAccount.from_dict(obj["blockchain_account"]) if obj.get("blockchain_account") is not None else None,
-            "generic_account": GenericAccount.from_dict(obj["generic_account"]) if obj.get("generic_account") is not None else None
+            "authentication_id": obj.get("authentication_id"),
+            "assets": [DetailedAssetsForTradingType.from_dict(_item) for _item in obj["assets"]] if obj.get("assets") is not None else None,
+            "specifics": AccountSpecifics.from_dict(obj["specifics"]) if obj.get("specifics") is not None else None
         })
         return _obj
 

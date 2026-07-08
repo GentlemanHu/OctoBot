@@ -147,6 +147,7 @@ from octobot_trading.personal_data.orders.order_util import (
     create_and_register_chained_order_on_base_order,
     get_enriched_orders_by_exchange_id,
     get_symbol_count,
+    get_symbols_from_orders,
 )
 from octobot_trading.personal_data.orders import protocol
 from octobot_trading.personal_data.orders.protocol import (
@@ -158,17 +159,6 @@ from octobot_trading.personal_data.orders.orders_storage_operations import (
     apply_order_storage_details_if_any,
     create_orders_storage_related_elements,
     create_missing_virtual_orders_from_storage_order_groups,
-)
-from octobot_trading.personal_data.orders import order_adapter
-from octobot_trading.personal_data.orders.order_adapter import (
-    adapt_price,
-    adapt_quantity,
-    trunc_with_n_decimal_digits,
-    adapt_order_quantity_because_quantity,
-    adapt_order_quantity_because_price,
-    split_orders,
-    check_and_adapt_order_details_if_necessary,
-    add_dusts_to_quantity_if_necessary,
 )
 from octobot_trading.personal_data.orders.decimal_order_adapter import (
     get_minimal_order_amount,
@@ -265,24 +255,16 @@ __all__ = [
     "BaseTrigger",
     "PriceTrigger",
     "OrdersUpdater",
-    "adapt_price",
     "get_minimal_order_amount",
     "get_minimal_order_cost",
     "decimal_adapt_price",
-    "adapt_quantity",
     "decimal_adapt_quantity",
-    "trunc_with_n_decimal_digits",
     "decimal_trunc_with_n_decimal_digits",
-    "adapt_order_quantity_because_quantity",
     "decimal_adapt_order_quantity_because_quantity",
-    "adapt_order_quantity_because_price",
     "decimal_adapt_order_quantity_because_price",
     "decimal_adapt_order_quantity_because_fees",
-    "split_orders",
     "decimal_split_orders",
-    "check_and_adapt_order_details_if_necessary",
     "decimal_check_and_adapt_order_details_if_necessary",
-    "add_dusts_to_quantity_if_necessary",
     "decimal_add_dusts_to_quantity_if_necessary",
     "create_order_from_raw",
     "create_order_instance_from_raw",
@@ -321,4 +303,5 @@ __all__ = [
     "get_symbol_count",
     "to_protocol_order",
     "exchange_columns_dict_from_protocol_order",
+    "get_symbols_from_orders",
 ]

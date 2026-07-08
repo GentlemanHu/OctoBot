@@ -15,6 +15,15 @@
 #  License along with this library.
 import os
 import octobot_commons.enums as enums
+import octobot_protocol.models.trading_type as protocol_trading_type
+
+
+def parse_boolean_str(value: str) -> bool:
+    """
+    :param value: the value to parse
+    :return: True when the value is "True" or "true" else false
+    """
+    return bool(value.lower() == "true")
 
 
 def parse_boolean_environment_var(env_key: str, default_value: str) -> bool:
@@ -23,7 +32,7 @@ def parse_boolean_environment_var(env_key: str, default_value: str) -> bool:
     :param default_value: the default value
     :return: True when the var value is "True" or "true" else false
     """
-    return bool(os.getenv(env_key, default_value).lower() == "true")
+    return parse_boolean_str(os.getenv(env_key, default_value))
 
 
 # time
@@ -118,6 +127,18 @@ CONFIG_EXCHANGE_FUTURE = "future"
 CONFIG_EXCHANGE_MARGIN = "margin"
 CONFIG_EXCHANGE_OPTION = "option"
 CONFIG_EXCHANGE_SPOT = "spot"
+TRADING_TYPE_TO_EXCHANGE_TYPE: dict[protocol_trading_type.TradingType, str] = {
+    protocol_trading_type.TradingType.SPOT: CONFIG_EXCHANGE_SPOT,
+    protocol_trading_type.TradingType.FUTURES: CONFIG_EXCHANGE_FUTURE,
+    protocol_trading_type.TradingType.OPTIONS: CONFIG_EXCHANGE_OPTION,
+    protocol_trading_type.TradingType.MARGIN: CONFIG_EXCHANGE_MARGIN,
+}
+EXCHANGE_TYPE_TO_TRADING_TYPE: dict[str, protocol_trading_type.TradingType] = {
+    CONFIG_EXCHANGE_SPOT: protocol_trading_type.TradingType.SPOT,
+    CONFIG_EXCHANGE_FUTURE: protocol_trading_type.TradingType.FUTURES,
+    CONFIG_EXCHANGE_OPTION: protocol_trading_type.TradingType.OPTIONS,
+    CONFIG_EXCHANGE_MARGIN: protocol_trading_type.TradingType.MARGIN,
+}
 CONFIG_EXCHANGE_REST_ONLY = "rest_only"
 CONFIG_EXCHANGE_WEB_SOCKET = "web-socket"
 CONFIG_EXCHANGE_SUB_ACCOUNT = "sub_account"

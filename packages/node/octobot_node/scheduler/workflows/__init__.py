@@ -16,3 +16,4 @@
 
 def register_workflows():
     import octobot_node.scheduler.workflows.automation_workflow
+    import octobot_node.scheduler.workflows.user_action_workflow

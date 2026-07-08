@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { LoadingButton } from "@/components/ui/loading-button"
 import { PasswordInput } from "@/components/ui/password-input"
+import { clearAuth } from "@/hooks/useAuth"
 import useCustomToast from "@/hooks/useCustomToast"
 import { savePassword } from "@/lib/device-key"
 import { handleError } from "@/utils"
@@ -103,8 +104,17 @@ function SetupWallet() {
       sessionStorage.setItem("setup_in_progress", "true")
       navigate({ to: "/setup/first-bot" })
     },
-    onError: (error) => {
-      handleError.bind(showErrorToast)(error as ApiError)
+    onError: async (error) => {
+      const apiError = error as ApiError
+      if (apiError.status === 409) {
+        // The node was already configured (e.g. session still had setup_in_progress set
+        // after a previous successful setup). Clean up and redirect to login.
+        sessionStorage.removeItem("setup_in_progress")
+        await clearAuth()
+        navigate({ to: "/login" })
+        return
+      }
+      handleError.bind(showErrorToast)(apiError)
     },
   })
 

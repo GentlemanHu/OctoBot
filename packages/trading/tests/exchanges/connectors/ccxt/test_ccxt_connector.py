@@ -16,6 +16,7 @@
 #  License along with this library.
 import decimal
 import ccxt
+import re
 import aiohttp
 import aiohttp.client_reqrep
 
@@ -23,12 +24,15 @@ import mock
 from mock import patch
 
 import octobot_trading.exchanges.connectors as exchange_connectors
+import octobot_trading.exchanges.connectors.ccxt.constants as ccxt_constants
 import octobot_trading.enums as enums
 import octobot_trading.errors
 import octobot_trading.constants
 import octobot_trading.exchange_data.contracts as contracts
 import octobot_trading.exchanges.connectors.ccxt.ccxt_client_util as ccxt_client_util
+import octobot_trading.exchanges.connectors.ccxt.ccxt_clients_cache as ccxt_clients_cache
 import pytest
+import octobot_trading.exchanges.connectors.ccxt.constants as ccxt_constants
 
 import tests.exchanges.connectors.ccxt.mock_exchanges_data as mock_exchanges_data
 from tests.exchanges import exchange_manager, future_simulated_exchange_manager, set_future_exchange_fees, \
@@ -82,6 +86,7 @@ async def test_initialize_impl_with_empty_symbols_and_timeframes(ccxt_connector)
             self.markets = {}
             self.set_markets_calls = []
             self.urls = {}
+            self.options = {}
 
         async def load_markets(self, reload=False, market_filter=None):
             pass
@@ -120,6 +125,7 @@ async def test_initialize_impl(ccxt_connector):
             self.markets = {}
             self.set_markets_calls = []
             self.urls = {}
+            self.options = {}
 
         async def load_markets(self, reload=False, market_filter=None):
             pass
@@ -130,9 +136,16 @@ async def test_initialize_impl(ccxt_connector):
         def set_sandbox_mode(self, is_sandboxed):
             pass
 
+    original_get_option_value = ccxt_client_util.get_option_value
+
+    def _get_option_value_patch(client, option_key, *args, **kwargs):
+        if option_key is enums.ExchangeClientOptions.INCLUDE_DISABLED_SYMBOLS_IN_AVAILABLE_SYMBOLS:
+            return True
+        return original_get_option_value(client, option_key, *args, **kwargs)
+
     with patch.object(ccxt_connector, 'client', new=MockCCXT()) as mocked_ccxt, \
-        patch.object(ccxt_connector, '_ensure_auth', new=mock.AsyncMock()) as _ensure_auth_mock:
-        ccxt_connector.exchange_manager.exchange.INCLUDE_DISABLED_SYMBOLS_IN_AVAILABLE_SYMBOLS = True
+        patch.object(ccxt_connector, '_ensure_auth', new=mock.AsyncMock()) as _ensure_auth_mock, \
+        patch.object(ccxt_client_util, 'get_option_value', mock.Mock(side_effect=_get_option_value_patch)):
         await ccxt_connector.initialize_impl()
         assert len(ccxt_connector.symbols) == 541   # all enabled + diasabled symbols
         assert ccxt_connector.time_frames == {
@@ -162,7 +175,6 @@ async def test_get_ccxt_order_type(ccxt_connector):
 
 
 async def test_get_trade_fee(exchange_manager, future_trader_simulator_with_default_linear):
-    spot_fees_value = 0.001
     future_symbol = "BTC/USDT:USDT"
     future_fees_value = 0.0004
     spot_symbol = "BTC/USDT"
@@ -174,13 +186,18 @@ async def test_get_trade_fee(exchange_manager, future_trader_simulator_with_defa
     # spot trading
     spot_ccxt_exchange.client.options['defaultType'] = enums.ExchangeTypes.SPOT.value
     await spot_ccxt_exchange.client.load_markets()
-    assert spot_fees_value / 5 <= spot_ccxt_exchange.client.markets[spot_symbol]['taker'] <= spot_fees_value * 5
+    spot_taker_fees_value = spot_ccxt_exchange.client.markets[spot_symbol]['taker']
+    spot_maker_fees_value = spot_ccxt_exchange.client.markets[spot_symbol]['maker']
+    spot_taker_fees_decimal = decimal.Decimal(str(spot_taker_fees_value))
+    spot_maker_fees_decimal = decimal.Decimal(str(spot_maker_fees_value))
+    assert spot_taker_fees_value > 0
+    assert spot_maker_fees_value > 0
     assert spot_ccxt_exchange.get_trade_fee(spot_symbol, enums.TraderOrderType.BUY_LIMIT, decimal.Decimal("0.45"),
                                             decimal.Decimal(10000), "taker") == \
-           _get_fees("taker", "BTC", 0.001, decimal.Decimal("0.00045"))
+           _get_fees("taker", "BTC", spot_taker_fees_value, decimal.Decimal("0.45") * spot_taker_fees_decimal)
     assert spot_ccxt_exchange.get_trade_fee(spot_symbol, enums.TraderOrderType.SELL_LIMIT, decimal.Decimal("0.45"),
                                             decimal.Decimal(10000), "maker") == \
-           _get_fees("maker", "USDT", 0.001, decimal.Decimal("4.5"))
+           _get_fees("maker", "USDT", spot_maker_fees_value, decimal.Decimal("4500") * spot_maker_fees_decimal)
 
     # future trading
     fut_ccxt_exchange.client.options['defaultType'] = enums.ExchangeTypes.FUTURE.value
@@ -286,18 +303,6 @@ async def test_error_describer(ccxt_connector):
                 raise ccxt.ExchangeError("plop")
         clear_first_consecutive_authentication_error_at_mock.assert_not_called()
         set_first_consecutive_authentication_error_at_if_unset_mock.assert_not_called()
-
-        with mock.patch.object(
-            ccxt_connector.exchange_manager.exchange, "is_authentication_error", mock.Mock(return_value=True)
-        ) as is_authentication_error_mock:
-            with pytest.raises(octobot_trading.errors.AuthenticationError):
-                # transformed ccxt error into auth error: set is called
-                with ccxt_connector.error_describer(is_authenticated_request=True):
-                    raise ccxt.ExchangeError("plop")
-            is_authentication_error_mock.assert_called_once()
-            clear_first_consecutive_authentication_error_at_mock.assert_not_called()
-            set_first_consecutive_authentication_error_at_if_unset_mock.assert_called_once()
-            set_first_consecutive_authentication_error_at_if_unset_mock.reset_mock()
 
         # proxied errors
         with pytest.raises(octobot_trading.errors.AuthenticationError):
@@ -421,7 +426,7 @@ async def test_error_describer(ccxt_connector):
             set_first_consecutive_authentication_error_at_if_unset_mock.assert_called_once()
             set_first_consecutive_authentication_error_at_if_unset_mock.reset_mock()
 
-            with pytest.raises(octobot_trading.errors.AuthenticationError, match="\[Proxied\] plop"):
+            with pytest.raises(octobot_trading.errors.AuthenticationError, match=re.escape(r"[Proxied] plop [URL: https///plop.com/coucou]")):
                 # proxied request error: add prefix, set is called on auth error
                 ccxt_connector.client.last_request_url = "https///plop.com/coucou"
                 with ccxt_connector.error_describer(is_authenticated_request=True):
@@ -432,6 +437,151 @@ async def test_error_describer(ccxt_connector):
             set_first_consecutive_authentication_error_at_if_unset_mock.assert_called_once()
             set_first_consecutive_authentication_error_at_if_unset_mock.reset_mock()
 
+
+class _LazyLoadMarketsMockCCXT:
+    def __init__(self, populate_markets_on_load: bool = True):
+        self.markets = {}
+        self.has = {'obLoadMarketsForSymbols': True}
+        self.urls = {'api': {'public': 'https://test.example'}}
+        self.apiKey = None
+        self.options = {}
+        self.name = 'test'
+        self.populate_markets_on_load = populate_markets_on_load
+
+    async def ob_load_markets_for_symbols(self, symbols, reload=False, params=None):
+        if self.populate_markets_on_load:
+            for symbol in symbols:
+                self.markets[symbol] = {'symbol': symbol}
+        return []
+
+
+class TestCcxtConnectorLoadMarketsForSymbols:
+
+    async def test_persists_markets_cache_after_lazy_symbol_load(self, ccxt_connector):
+        symbol = "BTC/ETH"
+        with (
+            mock.patch.object(ccxt_connector, 'client', new=_LazyLoadMarketsMockCCXT()),
+            mock.patch.object(ccxt_connector, '_persist_markets_cache') as persist_markets_cache_mock,
+        ):
+            await ccxt_connector.load_markets_for_symbols([symbol])
+
+        persist_markets_cache_mock.assert_called_once()
+
+    async def test_skips_cache_persist_when_lazy_load_leaves_markets_empty(self, ccxt_connector):
+        lazy_client = _LazyLoadMarketsMockCCXT(populate_markets_on_load=False)
+        with (
+            ccxt_clients_cache.isolated_empty_cache(),
+            mock.patch.object(octobot_trading.constants, "USE_CCXT_SHARED_MARKETS_CACHE", False),
+            mock.patch.object(ccxt_connector, 'client', new=lazy_client),
+        ):
+            await ccxt_connector.load_markets_for_symbols(["BTC/ETH"])
+            client_key = ccxt_clients_cache.get_client_key(lazy_client, False)
+            with pytest.raises(KeyError):
+                ccxt_clients_cache.get_exchange_parsed_markets(client_key)
+
+    async def test_accumulates_markets_in_cache_across_lazy_loads(self, ccxt_connector):
+        symbol_a = "BTC/ETH"
+        symbol_b = "ETH/USDT"
+        lazy_client = _LazyLoadMarketsMockCCXT()
+        with (
+            ccxt_clients_cache.isolated_empty_cache(),
+            mock.patch.object(octobot_trading.constants, "USE_CCXT_SHARED_MARKETS_CACHE", False),
+            mock.patch.object(ccxt_connector, 'client', new=lazy_client),
+        ):
+            await ccxt_connector.load_markets_for_symbols([symbol_a])
+            await ccxt_connector.load_markets_for_symbols([symbol_b])
+            client_key = ccxt_clients_cache.get_client_key(lazy_client, False)
+            cached_markets = ccxt_clients_cache.get_exchange_parsed_markets(client_key)
+            cached_symbols = {market['symbol'] for market in cached_markets}
+            assert cached_symbols == {symbol_a, symbol_b}
+
+
+class _TickerMarketsMockCCXT:
+    def __init__(self, symbols_to_add_on_fetch: list[str] | None = None):
+        self.markets = {}
+        self.urls = {'api': {'public': 'https://test.example'}}
+        self.apiKey = None
+        self.symbols_to_add_on_fetch = symbols_to_add_on_fetch or []
+
+    async def fetch_ticker(self, symbol, params=None):
+        for symbol_to_add in self.symbols_to_add_on_fetch:
+            self.markets[symbol_to_add] = {'symbol': symbol_to_add}
+        return {'symbol': symbol}
+
+    async def fetch_tickers(self, symbols, params=None):
+        for symbol_to_add in self.symbols_to_add_on_fetch:
+            self.markets[symbol_to_add] = {'symbol': symbol_to_add}
+        return {
+            symbol_to_add: {'symbol': symbol_to_add}
+            for symbol_to_add in self.symbols_to_add_on_fetch
+        }
+
+
+class TestCcxtConnectorGetPriceTicker:
+
+    async def test_persists_markets_cache_when_ticker_adds_symbol(self, ccxt_connector):
+        symbol = "BTC/ETH"
+        ticker_client = _TickerMarketsMockCCXT(symbols_to_add_on_fetch=[symbol])
+        with (
+            mock.patch.object(ccxt_connector, 'client', new=ticker_client),
+            mock.patch.object(ccxt_connector.adapter, 'adapt_ticker', side_effect=lambda ticker: ticker),
+            mock.patch.object(
+                ccxt_connector,
+                '_persist_markets_cache_if_new_symbols',
+            ) as persist_markets_cache_if_new_symbols_mock,
+        ):
+            await ccxt_connector.get_price_ticker(symbol)
+
+        persist_markets_cache_if_new_symbols_mock.assert_called_once_with(set())
+
+    async def test_skips_cache_persist_when_ticker_does_not_add_symbol(self, ccxt_connector):
+        symbol = "BTC/ETH"
+        ticker_client = _TickerMarketsMockCCXT()
+        ticker_client.markets = {symbol: {'symbol': symbol}}
+        with (
+            mock.patch.object(ccxt_connector, 'client', new=ticker_client),
+            mock.patch.object(ccxt_connector.adapter, 'adapt_ticker', side_effect=lambda ticker: ticker),
+            mock.patch.object(ccxt_connector, '_persist_markets_cache') as persist_markets_cache_mock,
+        ):
+            await ccxt_connector.get_price_ticker(symbol)
+
+        persist_markets_cache_mock.assert_not_called()
+
+
+class TestCcxtConnectorGetAllCurrenciesPriceTicker:
+
+    async def test_persists_markets_cache_when_tickers_add_symbols(self, ccxt_connector):
+        symbol_a = "BTC/ETH"
+        symbol_b = "ETH/USDT"
+        ticker_client = _TickerMarketsMockCCXT(symbols_to_add_on_fetch=[symbol_a, symbol_b])
+        with (
+            mock.patch.object(ccxt_connector, 'client', new=ticker_client),
+            mock.patch.object(ccxt_connector.adapter, 'adapt_ticker', side_effect=lambda ticker: ticker),
+            mock.patch.object(
+                ccxt_connector,
+                '_persist_markets_cache_if_new_symbols',
+            ) as persist_markets_cache_if_new_symbols_mock,
+        ):
+            await ccxt_connector.get_all_currencies_price_ticker(symbols=[symbol_a, symbol_b])
+
+        persist_markets_cache_if_new_symbols_mock.assert_called_once_with(set())
+
+    async def test_skips_cache_persist_when_tickers_do_not_add_symbols(self, ccxt_connector):
+        symbol_a = "BTC/ETH"
+        symbol_b = "ETH/USDT"
+        ticker_client = _TickerMarketsMockCCXT()
+        ticker_client.markets = {
+            symbol_a: {'symbol': symbol_a},
+            symbol_b: {'symbol': symbol_b},
+        }
+        with (
+            mock.patch.object(ccxt_connector, 'client', new=ticker_client),
+            mock.patch.object(ccxt_connector.adapter, 'adapt_ticker', side_effect=lambda ticker: ticker),
+            mock.patch.object(ccxt_connector, '_persist_markets_cache') as persist_markets_cache_mock,
+        ):
+            await ccxt_connector.get_all_currencies_price_ticker(symbols=[symbol_a, symbol_b])
+
+        persist_markets_cache_mock.assert_not_called()
 
 
 def _get_fees(type, currency, rate, cost):

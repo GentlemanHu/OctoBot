@@ -7,13 +7,15 @@ AutomationState
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
 **id** | **str** |  | 
-**status** | [**TaskStatus**](TaskStatus.md) |  | 
+**status** | [**WorkflowStatus**](WorkflowStatus.md) |  | 
+**error** | **str** |  | [optional] 
+**error_message** | **str** |  | [optional] 
 **metadata** | [**AutomationMetadata**](AutomationMetadata.md) |  | 
 **actions** | [**List[Action]**](Action.md) |  | [optional] 
 **priority_actions** | [**List[Action]**](Action.md) |  | [optional] 
 **exchanges** | **List[str]** |  | [optional] 
 **exchange_account_ids** | **List[str]** |  | [optional] 
-**assets** | [**List[Asset]**](Asset.md) |  | [optional] 
+**assets** | [**List[DetailedAssetsForTradingType]**](DetailedAssetsForTradingType.md) |  | [optional] 
 **orders** | [**List[OrderSummary]**](OrderSummary.md) |  | [optional] 
 **trades** | [**List[TradeSummary]**](TradeSummary.md) |  | [optional] 
 **positions** | [**List[PositionSummary]**](PositionSummary.md) |  | [optional] 

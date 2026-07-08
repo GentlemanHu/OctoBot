@@ -23,6 +23,7 @@ import collections
 
 import octobot_commons.symbols as symbol_util
 import octobot_commons.constants as commons_constants
+import octobot_commons.list_util as list_util
 import octobot_commons.logging as logging
 import octobot_commons.timestamp_util as timestamp_util
 import octobot_trading.constants as constants
@@ -33,6 +34,7 @@ import octobot_trading.personal_data.orders.states.fill_order_state as fill_orde
 import octobot_trading.personal_data.orders.order as order_import
 import octobot_trading.personal_data.orders.order_factory as order_factory
 import octobot_trading.personal_data.orders.triggers.price_trigger as price_trigger
+import octobot_trading.exchanges.util.exchange_data as exchange_data_import
 import octobot_trading.exchanges.util.exchange_market_status_fixer as exchange_market_status_fixer
 import octobot_trading.signals as signals
 from octobot_trading.enums import ExchangeConstantsMarketStatusColumns as Ecmsc
@@ -270,7 +272,7 @@ async def get_pre_order_data(exchange_manager, symbol: str, timeout: int = None,
                              portfolio_type=commons_constants.PORTFOLIO_AVAILABLE,
                              target_price=None):
     price = target_price or await get_up_to_date_price(exchange_manager, symbol, timeout=timeout)
-    symbol_market = exchange_manager.exchange.get_market_status(symbol, with_fixer=False)
+    symbol_market = await exchange_manager.exchange.get_market_status_including_lazy_load(symbol, with_fixer=False)
     currency_available, market_available, market_quantity = get_portfolio_amounts(
         exchange_manager, symbol, price, portfolio_type=portfolio_type
     )
@@ -352,10 +354,13 @@ def get_futures_max_order_size(exchange_manager, symbol, side, current_price, re
         )
         # apply MAX_INCREASED_POSITION_QUANTITY_MULTIPLIER in case the total order cost computation
         # is not (yet) accurate on this exchange (default is 1, meaning the calculation is accurate)
-        if exchange_manager.exchange.MAX_INCREASED_POSITION_QUANTITY_MULTIPLIER != constants.ONE \
+        max_increased_position_quantity_multiplier = decimal.Decimal(str(exchange_manager.exchange.get_option_value(
+            enums.ExchangeClientOptions.MAX_INCREASED_POSITION_QUANTITY_MULTIPLIER
+        )))
+        if max_increased_position_quantity_multiplier != constants.ONE \
            and not exchange_manager.is_backtesting:
             max_position_increased_order_quantity *= \
-                exchange_manager.exchange.MAX_INCREASED_POSITION_QUANTITY_MULTIPLIER
+                max_increased_position_quantity_multiplier
         # increasing position: always use the same currency
         return max_position_increased_order_quantity + (
             # include reducing position amount to process reverse
@@ -528,8 +533,8 @@ def is_take_profit_order(order_type: enums.TraderOrderType):
 
 
 def ensure_orders_limit(exchange_manager, symbol, added_orders: list[enums.TraderOrderType]):
-    max_limit_orders = exchange_manager.exchange.get_max_orders_count(symbol, enums.TraderOrderType.SELL_LIMIT)
-    max_stop_orders = exchange_manager.exchange.get_max_orders_count(symbol, enums.TraderOrderType.STOP_LOSS)
+    max_limit_orders = exchange_manager.exchange.get_max_open_orders_count(symbol, enums.TraderOrderType.SELL_LIMIT)
+    max_stop_orders = exchange_manager.exchange.get_max_open_orders_count(symbol, enums.TraderOrderType.STOP_LOSS)
     open_orders = exchange_manager.exchange_personal_data.orders_manager.get_open_orders(
         symbol=symbol, active=None  # consider both active and inactive orders of this symbol
     )
@@ -800,7 +805,7 @@ def get_valid_filled_price(order, ideal_price: decimal.Decimal):
 
 async def adapt_chained_order_before_creation(base_order, chained_order):
     can_be_created = True
-    if chained_order.update_with_triggering_order_fees:
+    if chained_order.update_with_triggering_order_fees and constants.ENABLE_CHAINED_ORDER_UPDATE_WITH_TRIGGERING_ORDER_FEES:
         can_be_created = chained_order.update_quantity_with_order_fees(base_order)
     # ensure price is not outdated
     await chained_order.update_price_if_outdated()
@@ -831,6 +836,12 @@ async def create_and_register_chained_order_on_base_order(
     # do not reduce chained order amounts to account for fees when trading futures
     if update_with_triggering_order_fees is None:
         update_with_triggering_order_fees = not exchange_manager.is_future
+    if update_with_triggering_order_fees and not constants.ENABLE_CHAINED_ORDER_UPDATE_WITH_TRIGGERING_ORDER_FEES:
+        logging.get_logger(LOGGER_NAME).info(
+            "Chained order update with triggering order fees is disabled, "
+            "update_with_triggering_order_fees will be set to False."
+        )
+        update_with_triggering_order_fees = False
     if allow_bundling:
         params = await exchange_manager.trader.bundle_chained_order_with_uncreated_order(
             base_order, chained_order, update_with_triggering_order_fees
@@ -940,4 +951,15 @@ def get_symbol_count(raw_trades_or_raw_orders: list[dict]) -> dict[str, int]:
             for element in raw_trades_or_raw_orders
         )
     )
+
+
+def get_symbols_from_orders(orders: exchange_data_import.OrdersDetails) -> list[str]:
+    symbols: list[str] = []
+    order_columns = enums.ExchangeConstantsOrderColumns
+    for order in orders.open_orders + orders.missing_orders:
+        storage = order.get(constants.STORAGE_ORIGIN_VALUE, order)
+        order_symbol = storage.get(order_columns.SYMBOL.value)
+        if order_symbol:
+            symbols.append(order_symbol)
+    return list_util.deduplicate(symbols)
 

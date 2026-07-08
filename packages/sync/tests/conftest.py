@@ -16,26 +16,6 @@
 
 """Shared test fixtures."""
 
-import time
-
-import pytest
-
-import octobot_sync.auth as auth
-import octobot_sync.constants as constants
-
-
-TEST_PUBKEY = "0xTestPubkey1234567890abcdef"
-
-
-@pytest.fixture
-def memory_storage():
-    return auth.MemoryStorageAdapter()
-
-
-@pytest.fixture
-def nonce_store(memory_storage):
-    return auth.NonceStore(memory_storage)
-
 
 class MemoryObjectStore:
     """Minimal AbstractObjectStore for testing."""
@@ -67,33 +47,3 @@ class MemoryObjectStore:
     async def delete_many(self, keys: list[str]) -> None:
         for k in keys:
             self._store.pop(k, None)
-
-
-@pytest.fixture
-def memory_object_store():
-    return MemoryObjectStore()
-
-
-def make_auth_headers(
-    pubkey: str = TEST_PUBKEY,
-    method: str = "GET",
-    path: str = "/",
-    body: str = "",
-) -> dict[str, str]:
-    """Build auth headers with a deterministic fake signature.
-
-    Callers must patch web3.Account.recover_message
-    to return the expected pubkey for the canonical string produced by these headers.
-    """
-    ts = str(int(time.time() * 1000))
-    nonce = f"test-nonce-{time.time()}"
-    body_hash = auth.hash_body(body)
-    canonical = auth.build_canonical(method, path, ts, nonce, body_hash)
-    signature = f"sig-{ts}"
-
-    return {
-        constants.HEADER_PUBKEY: pubkey,
-        constants.HEADER_SIGNATURE: signature,
-        constants.HEADER_TIMESTAMP: ts,
-        constants.HEADER_NONCE: nonce,
-    }, canonical, signature

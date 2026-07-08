@@ -292,7 +292,10 @@ class GetOperator(dsl_interpreter.CallOperator):
             return default
 
 
-class ValueIfOperator(dsl_interpreter.PreComputingCallOperator):
+class ValueIfOperator(
+    dsl_interpreter.PreComputingCallOperator,
+    dsl_interpreter.NestedInterpretationMixin,
+):
     NAME = "value_if"
     DESCRIPTION = (
         "Returns the computed value if the inner DSL expression evaluates to a truthy result; "
@@ -345,9 +348,61 @@ class ValueIfOperator(dsl_interpreter.PreComputingCallOperator):
                 octobot_commons_constants.LOCAL_VALUE_PLACEHOLDER,
                 repr(json_util.sanitize(computed_value)),
             )
-        nested_interpreter = dsl_interpreter.Interpreter(dsl_interpreter.get_all_operators())
-        condition_result = await nested_interpreter.interprete(inner_expression)
+        condition_result = await self.interprete_in_nested_interpreter(inner_expression)
         self.value = computed_value if bool(condition_result) else False
+
+
+class IfErrorOperator(
+    dsl_interpreter.PreComputingCallOperator,
+    dsl_interpreter.NestedInterpretationMixin,
+):
+    NAME = "if_error"
+    DESCRIPTION = (
+        "Returns the computed value of the base expression when it does not raise. "
+        "If the base raises during pre_compute or compute, interprets the on_error parameter string as a DSL expression "
+        "and returns that result. Pass on_error as a string literal so it is not evaluated eagerly."
+    )
+    EXAMPLE = "if_error(sqrt(-1), \"'fallback'\")"
+
+    @staticmethod
+    def get_name() -> str:
+        return "if_error"
+
+    @classmethod
+    def get_parameters(cls) -> list[dsl_interpreter.OperatorParameter]:
+        return [
+            dsl_interpreter.OperatorParameter(
+                name="value",
+                description="base DSL expression; its computed value is returned when evaluation succeeds",
+                required=True,
+                type=object,
+            ),
+            dsl_interpreter.OperatorParameter(
+                name="on_error",
+                description=(
+                    "DSL source string (use a string literal): interpreted only when the base expression raises"
+                ),
+                required=True,
+                type=str,
+            ),
+        ]
+
+    async def pre_compute(self) -> None:
+        param_by_name = self.get_input_value_by_parameter()
+        value_input = param_by_name["value"]
+        on_error_script = param_by_name["on_error"]
+        if not isinstance(on_error_script, str):
+            raise octobot_commons.errors.InvalidParametersError(
+                f"if_error() requires on_error to be a str, got {type(on_error_script).__name__}"
+            )
+        try:
+            await super().pre_compute()
+            if isinstance(value_input, dsl_interpreter.Operator):
+                self.value = value_input.compute()
+            else:
+                self.value = self._get_computed_parameter(value_input)
+        except Exception:
+            self.value = await self.interprete_in_nested_interpreter(on_error_script)
 
 
 class ErrorOperator(dsl_interpreter.CallOperator):

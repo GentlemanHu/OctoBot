@@ -40,6 +40,7 @@ import octobot_trading.personal_data as trading_personal_data
 import octobot_trading.enums as trading_enums
 import octobot_trading.constants as trading_constants
 import octobot_trading.modes
+import octobot_trading.dsl as trading_dsl
 import octobot_trading.errors
 import octobot_trading.signals as trading_signals
 
@@ -188,6 +189,80 @@ async def test_init_default_values(tools):
     assert mode.stop_loss_price_multiplier == decimal.Decimal("0.1")
 
 
+class TestDCATradingModeGetTentacleConfigTradedSymbols:
+
+    def test_returns_trading_pairs_deduplicated(self):
+        trading_config = {
+            dca_trading.DCATradingMode.TRADING_PAIRS: ["BTC/USDC", "ETH/USDC", "BTC/USDC"],
+        }
+        symbols = dca_trading.DCATradingMode.get_tentacle_config_traded_symbols(
+            trading_config, "USDC"
+        )
+        assert symbols == ["BTC/USDC", "ETH/USDC"]
+
+    def test_empty_when_no_trading_pairs(self):
+        assert dca_trading.DCATradingMode.get_tentacle_config_traded_symbols({}, "USDC") == []
+
+
+class TestDCATradingModeGetDslDependencies:
+
+    def test_returns_symbol_dependencies_without_time_frame_when_time_frames_empty(self):
+        trading_config = {
+            dca_trading.DCATradingMode.TRADING_PAIRS: ["BTC/USDC", "ETH/USDC"],
+        }
+        dependencies = dca_trading.DCATradingMode.get_dsl_dependencies(
+            trading_config, {"trading": {"reference_market": "USDC"}}, None
+        )
+        assert len(dependencies) == 2
+        assert all(isinstance(dependency, trading_dsl.SymbolDependency) for dependency in dependencies)
+        symbols = {dependency.symbol for dependency in dependencies}
+        assert symbols == {"BTC/USDC", "ETH/USDC"}
+        assert all(dependency.time_frame is None for dependency in dependencies)
+
+    def test_returns_symbol_dependency_for_each_symbol_and_time_frame(self):
+        trading_config = {
+            dca_trading.DCATradingMode.TRADING_PAIRS: ["BTC/USDC", "ETH/USDC"],
+            dca_trading.DCATradingMode.TIME_FRAMES: ["2h", "4h"],
+        }
+        dependencies = dca_trading.DCATradingMode.get_dsl_dependencies(
+            trading_config, {"trading": {"reference_market": "USDC"}}, None
+        )
+        assert len(dependencies) == 4
+        assert {
+            (dependency.symbol, dependency.time_frame)
+            for dependency in dependencies
+        } == {
+            ("BTC/USDC", "2h"),
+            ("BTC/USDC", "4h"),
+            ("ETH/USDC", "2h"),
+            ("ETH/USDC", "4h"),
+        }
+
+    def test_empty_when_no_trading_pairs(self):
+        assert dca_trading.DCATradingMode.get_dsl_dependencies({}, {}, None) == []
+
+    def test_deduplicates_trading_pairs(self):
+        trading_config = {
+            dca_trading.DCATradingMode.TRADING_PAIRS: ["BTC/USDC", "ETH/USDC", "BTC/USDC"],
+        }
+        dependencies = dca_trading.DCATradingMode.get_dsl_dependencies(
+            trading_config, {"trading": {"reference_market": "USDC"}}, None
+        )
+        assert [dependency.symbol for dependency in dependencies] == ["BTC/USDC", "ETH/USDC"]
+
+    def test_deduplicates_time_frames(self):
+        trading_config = {
+            dca_trading.DCATradingMode.TRADING_PAIRS: ["BTC/USDC"],
+            dca_trading.DCATradingMode.TIME_FRAMES: ["2h", "4h", "2h"],
+        }
+        dependencies = dca_trading.DCATradingMode.get_dsl_dependencies(
+            trading_config, {"trading": {"reference_market": "USDC"}}, None
+        )
+        assert {
+            (dependency.symbol, dependency.time_frame) for dependency in dependencies
+        } == {("BTC/USDC", "2h"), ("BTC/USDC", "4h")}
+
+
 async def test_init_config_values(tools):
     update = {
         "buy_order_amount": "50q",
@@ -231,6 +306,7 @@ async def test_init_config_values(tools):
 async def test_inner_start(tools):
     mode, producer, consumer, trader = await _init_mode(tools, _get_config(tools, {}))
     with mock.patch.object(producer, "dca_task", mock.AsyncMock()) as dca_task_mock, \
+            mock.patch.object(producer, "_local_symbol_dca_trigger", mock.AsyncMock()) as local_trigger_mock, \
             mock.patch.object(producer, "get_channels_registration", mock.Mock(return_value=[])):
         # evaluator based
         mode.trigger_mode = dca_trading.TriggerMode.MAXIMUM_EVALUATORS_SIGNALS_BASED
@@ -238,17 +314,32 @@ async def test_inner_start(tools):
         for _ in range(10):
             await asyncio_tools.wait_asyncio_next_cycle()
         dca_task_mock.assert_not_called()
+        local_trigger_mock.assert_not_called()
 
-        # time based
+        # time based: delayed_start runs dca_task loop
         mode.trigger_mode = dca_trading.TriggerMode.TIME_BASED
+        dca_task_mock.reset_mock()
+        local_trigger_mock.reset_mock()
         await producer.inner_start()
         for _ in range(10):
             await asyncio_tools.wait_asyncio_next_cycle()
         dca_task_mock.assert_called_once()
+        local_trigger_mock.assert_not_called()
+
+        # always trigger long: delayed_start triggers once via _local_symbol_dca_trigger
+        mode.trigger_mode = dca_trading.TriggerMode.ALWAYS_TRIGGER_LONG
+        dca_task_mock.reset_mock()
+        local_trigger_mock.reset_mock()
+        await producer.inner_start()
+        for _ in range(10):
+            await asyncio_tools.wait_asyncio_next_cycle()
+        dca_task_mock.assert_not_called()
+        local_trigger_mock.assert_called_once()
 
 
 async def test_dca_task(tools):
     mode, producer, consumer, trader = await _init_mode(tools, _get_config(tools, {}))
+    auto_trigger_state = trading_enums.EvaluatorStates.VERY_LONG
     calls = []
     try:
         def _on_trigger(**kwargs):
@@ -262,12 +353,12 @@ async def test_dca_task(tools):
             # backtesting: trigger only once
             with mock.patch.object(producer, "trigger_dca",
                                    mock.AsyncMock(side_effect=_on_trigger)) as trigger_dca_mock:
-                await producer.dca_task()
+                await producer.dca_task(auto_trigger_state)
                 assert trigger_dca_mock.call_count == 1
                 assert trigger_dca_mock.mock_calls[0].kwargs == {
                     "cryptocurrency": "Bitcoin",
                     "symbol": "BTC/USDT",
-                    "state": trading_enums.EvaluatorStates.VERY_LONG
+                    "state": auto_trigger_state
                 }
                 sleep_mock.assert_not_called()
 
@@ -276,12 +367,12 @@ async def test_dca_task(tools):
             producer.exchange_manager.is_backtesting = False
             with mock.patch.object(producer, "trigger_dca",
                                    mock.AsyncMock(side_effect=_on_trigger)) as trigger_dca_mock:
-                await producer.dca_task()
+                await producer.dca_task(auto_trigger_state)
                 assert trigger_dca_mock.call_count == 2
                 assert trigger_dca_mock.mock_calls[0].kwargs == {
                     "cryptocurrency": "Bitcoin",
                     "symbol": "BTC/USDT",
-                    "state": trading_enums.EvaluatorStates.VERY_LONG
+                    "state": auto_trigger_state
                 }
                 assert sleep_mock.call_count == 2
                 assert sleep_mock.mock_calls[0].args == (10080 * commons_constants.MINUTE_TO_SECONDS,)
@@ -620,8 +711,8 @@ async def test_skip_create_entry_order_when_too_many_live_exit_orders(tools):
     )
     with mock.patch.object(mode, "create_order", mock.AsyncMock(side_effect=lambda *args, **kwargs: args[0])) \
             as create_order_mock, \
-        mock.patch.object(trader.exchange_manager.exchange, "get_max_orders_count", mock.Mock(return_value=1)) \
-            as get_max_orders_count_mock, \
+        mock.patch.object(trader.exchange_manager.exchange, "get_max_open_orders_count", mock.Mock(return_value=1)) \
+            as get_max_open_orders_count_mock, \
         mock.patch.object(
             trader.exchange_manager.exchange_personal_data.orders_manager, "get_open_orders",
             mock.Mock(return_value=[mock.Mock(order_type=trading_enums.TraderOrderType.BUY_LIMIT)])
@@ -631,19 +722,19 @@ async def test_skip_create_entry_order_when_too_many_live_exit_orders(tools):
         mode.use_take_profit_exit_orders = False
         with pytest.raises(octobot_trading.errors.MaxOpenOrderReachedForSymbolError):
             await consumer._create_entry_with_chained_exit_orders(entry_order, entry_price, symbol_market, None)
-        assert get_max_orders_count_mock.call_count == 1 * 2   # entry: 1, stop: 0, tp: 0, 2 calls for each
-        get_max_orders_count_mock.reset_mock()
+        assert get_max_open_orders_count_mock.call_count == 1 * 2   # entry: 1, stop: 0, tp: 0, 2 calls for each
+        get_max_open_orders_count_mock.reset_mock()
         create_order_mock.assert_not_called()
         get_open_orders_mock.assert_called_once()
 
         # 1.B can create entry market order
         entry_order.order_type=trading_enums.TraderOrderType.BUY_MARKET
         assert await consumer._create_entry_with_chained_exit_orders(entry_order, entry_price, symbol_market, None)
-        get_max_orders_count_mock.assert_not_called()   # not called for entry marker orders
+        get_max_open_orders_count_mock.assert_not_called()   # not called for entry marker orders
         create_order_mock.assert_called_once_with(entry_order, params=None, dependencies=None)
         create_order_mock.reset_mock()
         assert len(entry_order.chained_orders) == 0
-        get_max_orders_count_mock.reset_mock()
+        get_max_open_orders_count_mock.reset_mock()
         create_order_mock.assert_not_called()
         get_open_orders_mock.assert_called_once()
 
@@ -652,14 +743,14 @@ async def test_skip_create_entry_order_when_too_many_live_exit_orders(tools):
 
     with mock.patch.object(mode, "create_order", mock.AsyncMock(side_effect=lambda *args, **kwargs: args[0])) \
             as create_order_mock, \
-        mock.patch.object(trader.exchange_manager.exchange, "get_max_orders_count", mock.Mock(return_value=1)) \
-            as get_max_orders_count_mock:
+        mock.patch.object(trader.exchange_manager.exchange, "get_max_open_orders_count", mock.Mock(return_value=1)) \
+            as get_max_open_orders_count_mock:
         mode.use_stop_loss = True
         mode.use_take_profit_exit_orders = True
         # 2. chained stop loss & take profit
         assert await consumer._create_entry_with_chained_exit_orders(entry_order, entry_price, symbol_market, None)
-        assert get_max_orders_count_mock.call_count == 3 * 2   # entry: 1, stop: 1, tp: 1, 2 calls for each
-        get_max_orders_count_mock.reset_mock()
+        assert get_max_open_orders_count_mock.call_count == 3 * 2   # entry: 1, stop: 1, tp: 1, 2 calls for each
+        get_max_open_orders_count_mock.reset_mock()
         create_order_mock.assert_called_once_with(entry_order, params=None, dependencies=None)
         create_order_mock.reset_mock()
         assert len(entry_order.chained_orders) == 2
@@ -673,8 +764,8 @@ async def test_skip_create_entry_order_when_too_many_live_exit_orders(tools):
         mode.secondary_exit_orders_count = 1
         with pytest.raises(octobot_trading.errors.MaxOpenOrderReachedForSymbolError):
             await consumer._create_entry_with_chained_exit_orders(entry_order, entry_price, symbol_market, None)
-        assert get_max_orders_count_mock.call_count == 4 * 2   # entry: 1, stop: 1, tp: 2, 2 calls for each
-        get_max_orders_count_mock.reset_mock()
+        assert get_max_open_orders_count_mock.call_count == 4 * 2   # entry: 1, stop: 1, tp: 2, 2 calls for each
+        get_max_open_orders_count_mock.reset_mock()
         create_order_mock.assert_not_called()
 
 

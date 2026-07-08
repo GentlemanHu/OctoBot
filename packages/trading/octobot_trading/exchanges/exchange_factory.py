@@ -16,11 +16,10 @@
 import asyncio
 import typing
 
-import trading_backend
-
 import octobot_commons.authentication as authentication
 import octobot_trading.errors as errors
 import octobot_trading.exchanges as exchanges
+import octobot_trading.enums as trading_enums
 
 
 async def create_exchanges(exchange_manager, exchange_config_by_exchange: typing.Optional[dict[str, dict]]):
@@ -57,14 +56,16 @@ async def create_real_exchange(exchange_manager, exchange_config_by_exchange: ty
     await _create_rest_exchange(exchange_manager, exchange_config_by_exchange)
     try:
         await exchange_manager.exchange.initialize()
-        _create_exchange_backend(exchange_manager)
         if exchange_manager.exchange_only:
             return
-        await _initialize_exchange_backend(exchange_manager)
+        await _initialize_broker_status(exchange_manager)
     except errors.AuthenticationError as err:
         if (
             exchange_manager.without_auth or exchange_manager.exchange.requires_authentication(
-                exchange_manager.exchange.tentacle_config, None, None
+                exchange_manager.exchange.tentacle_config,
+                None,
+                exchange_config_by_exchange,
+                exchange_manager,
             )
             or exchange_manager.disable_unauth_retry
         ):
@@ -93,22 +94,12 @@ async def initialize_real_exchange(exchange_manager):
             await exchanges.search_and_create_websocket(exchange_manager)
 
 
-def _create_exchange_backend(exchange_manager):
-    try:
-        exchange_manager.exchange_backend = trading_backend.exchange_factory.create_exchange_backend(
-            exchange_manager.exchange
-        )
-    except Exception as e:
-        exchange_manager.logger.exception(e, True, f"Error when creating exchange backend: {e}")
-
-
-async def _initialize_exchange_backend(exchange_manager):
-    if exchange_manager.exchange_backend is not None and exchange_manager.exchange.authenticated() \
+async def _initialize_broker_status(exchange_manager):
+    if exchange_manager.exchange.authenticated() \
             and not exchange_manager.is_trader_simulated:
-        exchange_manager.logger.debug(await exchange_manager.exchange_backend.initialize())
         initial_is_broker_enabled = exchange_manager.is_broker_enabled
         try:
-            exchange_manager.is_broker_enabled, _ = await exchange_manager.exchange_backend.is_valid_account()
+            exchange_manager.is_broker_enabled = exchange_manager.exchange.get_option_value(trading_enums.ExchangeClientOptions.HAS_BROKER)
             exchange_manager.logger.debug(f"Broker rebate enabled: {exchange_manager.is_broker_enabled}")
         except Exception as err:
             exchange_manager.is_broker_enabled = initial_is_broker_enabled

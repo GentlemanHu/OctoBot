@@ -12,8 +12,8 @@ os.environ["USE_MINIMAL_LIBS"] = "true"
 os.environ["ALLOW_FUNDS_TRANSFER"] = "True"
 
 import ccxt.async_support as ccxt_async
-import octobot_trading.exchanges.connectors.ccxt.ccxt_clients_cache as ccxt_clients_cache
 import octobot.community as community
+import octobot.community.local_authenticator as local_community_auth
 
 import octobot_protocol.models as protocol_models
 
@@ -115,12 +115,31 @@ async def fetch_last_price(symbol: str) -> float:
 
 
 @contextlib.contextmanager
-def mocked_community_authentication():
+def mocked_local_user_configuration():
     with mock.patch.object(
-        community.CommunityAuthentication, "login", mock.AsyncMock(),
-    ) as login_mock, mock.patch.object(
-        community.CommunityAuthentication, "is_logged_in", mock.AsyncMock(return_value=True)
+        local_community_auth,
+        "get_user_configuration",
+        local_community_auth.get_stateless_configuration,
     ):
+        yield
+
+
+@contextlib.contextmanager
+def mocked_community_authentication():
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mocked_local_user_configuration())
+        login_mock = stack.enter_context(
+            mock.patch.object(
+                community.CommunityAuthentication, "login", mock.AsyncMock(),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                community.CommunityAuthentication,
+                "is_logged_in",
+                mock.AsyncMock(return_value=True),
+            )
+        )
         yield login_mock
 
 
@@ -354,7 +373,8 @@ def empty_copy_exchange_account_action(
 
 
 @pytest.fixture
-def isolated_exchange_cache():
+def isolated_exchange_cache(): 
+    import octobot_trading.exchanges.connectors.ccxt.ccxt_clients_cache as ccxt_clients_cache
     with ccxt_clients_cache.isolated_empty_cache():
         yield
 

@@ -363,8 +363,10 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
 
     async def manual_trigger(self, data) -> None:
         kwargs = {
-            "trigger_source": common_enums.TriggerSource.MANUAL.value
+            "trigger_source": common_enums.TriggerSource.MANUAL.value,
         }
+        if not self.get_is_symbol_wildcard() and self.symbol:
+            kwargs["symbol"] = self.symbol
         kwargs.update(data.get("kwargs", {}))
         for producer in self.producers:
             await producer.trigger(**kwargs)
@@ -381,6 +383,9 @@ class AbstractTradingMode(abstract_tentacle.AbstractTentacle):
 
     def get_dsl_state(self) -> dict:
         return {}
+
+    def get_dsl_recall_reset_to_action_id(self, param_by_name: dict) -> typing.Optional[str]:
+        return None
 
     def enabled_health_check_in_config(self) -> bool:
         try:

@@ -6,15 +6,9 @@ ExchangeAccount
 
 Name | Type | Description | Notes
 ------------ | ------------- | ------------- | -------------
-**exchange** | **str** |  | 
+**account_type** | [**AccountType**](AccountType.md) | exchange | 
 **remote_account_id** | **str** |  | 
-**api_key** | **str** |  | 
-**api_secret** | **str** |  | 
-**api_passphrase** | **str** |  | [optional] 
-**assets** | [**List[Asset]**](Asset.md) |  | [optional] 
-**orders** | [**List[Order]**](Order.md) |  | [optional] 
-**trades** | [**List[Trade]**](Trade.md) |  | [optional] 
-**positions** | [**List[Position]**](Position.md) |  | [optional] 
+**exchange_config_ids** | **List[str]** |  | 
 
 ## Example
 

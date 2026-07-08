@@ -34,13 +34,12 @@ from ccxt.base.types import (
 import octobot_trading.exchanges.adapters as adapters
 import octobot_trading.exchanges.connectors.ccxt.enums as ccxt_enums
 import octobot_trading.exchanges.connectors.ccxt.constants as ccxt_constants
-import octobot_trading.personal_data as personal_data
+import octobot_trading.personal_data.portfolios.portfolio_util as portfolio_util
 import octobot_trading.constants as constants
 import octobot_trading.enums as enums
 from octobot_trading.enums import ExchangeConstantsOrderColumns as ecoc
 import octobot_commons.enums as common_enums
 import octobot_commons.constants as common_constants
-import octobot_commons.number_util as number_util
 
 
 class CCXTAdapter(adapters.AbstractAdapter):
@@ -131,16 +130,11 @@ class CCXTAdapter(adapters.AbstractAdapter):
         if "time_frame" in kwargs:
             candles_s = common_enums.TimeFramesMinutes[common_enums.TimeFrames(kwargs["time_frame"])] * \
                         common_constants.MINUTE_TO_SECONDS
-        for index, ohlcv in enumerate(fixed):
+        for _, ohlcv in enumerate(fixed):
             try:
                 int_val = int(self.get_uniformized_timestamp(ohlcv[common_enums.PriceIndexes.IND_PRICE_TIME.value]))
                 ohlcv[common_enums.PriceIndexes.IND_PRICE_TIME.value] = int_val - (int_val % candles_s)
                 self._fix_ohlcv_prices(ohlcv)
-            except TypeError:
-                # the last candle might not be properly set
-                if self.connector.exchange_manager.exchange.DUMP_INCOMPLETE_LAST_CANDLE and index == len(fixed) - 1:
-                    return fixed[:-1]
-                raise
             except KeyError as e:
                 self.logger.error(f"Fail to fix ohlcv ({e})")
         return fixed
@@ -151,16 +145,11 @@ class CCXTAdapter(adapters.AbstractAdapter):
 
     def fix_kline(self, raw: dict, **kwargs) -> dict:
         fixed = super().fix_kline(raw, **kwargs)
-        for index, kline in enumerate(fixed):
+        for _, kline in enumerate(fixed):
             try:
                 kline[common_enums.PriceIndexes.IND_PRICE_TIME.value] = \
                     int(self.get_uniformized_timestamp(kline[common_enums.PriceIndexes.IND_PRICE_TIME.value]))
                 self._fix_ohlcv_prices(kline)
-            except TypeError:
-                # the last candle might not be properly set
-                if self.connector.exchange_manager.exchange.DUMP_INCOMPLETE_LAST_CANDLE and index == len(fixed) - 1:
-                    return fixed[:-1]
-                raise
             except KeyError as e:
                 self.logger.error(f"Fail to fix kline ({e})")
         return fixed
@@ -210,7 +199,7 @@ class CCXTAdapter(adapters.AbstractAdapter):
         fixed.pop(ccxt_constants.CCXT_INFO, None)
         fixed.pop(ccxt_enums.ExchangeConstantsCCXTColumns.DATETIME.value, None)
         fixed.pop(ccxt_enums.ExchangeConstantsCCXTColumns.TIMESTAMP.value, None)
-        return personal_data.parse_decimal_portfolio(fixed)
+        return portfolio_util.parse_decimal_portfolio(fixed)
 
     def fix_order_book(self, raw: CCXTOrderBook, **kwargs) -> dict:
         fixed = super().fix_order_book(raw, **kwargs)
@@ -464,34 +453,26 @@ class CCXTAdapter(adapters.AbstractAdapter):
         # CCXT standard mark_price parsing logic
         return fixed
 
-    def fix_market_status(self, raw: CCXTMarket, remove_price_limits: bool = False, **kwargs) -> dict:
-        fixed = super().fix_market_status(raw, remove_price_limits=remove_price_limits, **kwargs)
-        if not fixed:
-            return fixed
-        # CCXT standard market_status fixing logic
-        fixed[enums.ExchangeConstantsMarketStatusColumns.PRECISION.value][
-            enums.ExchangeConstantsMarketStatusColumns.PRECISION_AMOUNT.value] = number_util.get_digits_count(
-            fixed[enums.ExchangeConstantsMarketStatusColumns.PRECISION.value][
-                enums.ExchangeConstantsMarketStatusColumns.PRECISION_AMOUNT.value]
-        )
-        fixed[enums.ExchangeConstantsMarketStatusColumns.PRECISION.value][
-            enums.ExchangeConstantsMarketStatusColumns.PRECISION_PRICE.value] = number_util.get_digits_count(
-            fixed[enums.ExchangeConstantsMarketStatusColumns.PRECISION.value][
-                enums.ExchangeConstantsMarketStatusColumns.PRECISION_PRICE.value]
-        )
-        if remove_price_limits:
-            fixed[enums.ExchangeConstantsMarketStatusColumns.LIMITS.value][
-                enums.ExchangeConstantsMarketStatusColumns.LIMITS_PRICE.value][
-                enums.ExchangeConstantsMarketStatusColumns.LIMITS_PRICE_MIN.value] = None
-            fixed[enums.ExchangeConstantsMarketStatusColumns.LIMITS.value][
-                enums.ExchangeConstantsMarketStatusColumns.LIMITS_PRICE.value][
-                enums.ExchangeConstantsMarketStatusColumns.LIMITS_PRICE_MAX.value] = None
-
-        return fixed
+    def fix_market_status(self, raw: CCXTMarket, **kwargs) -> dict:
+        return super().fix_market_status(raw, **kwargs)
 
     def parse_market_status(self, fixed: CCXTMarket, remove_price_limits=False, **kwargs) -> dict:
         # CCXT standard market_status parsing logic
         return fixed # type: ignore
+
+    def fix_dex_pairs(self, raw: list[dict], **kwargs) -> list[dict]:
+        fixed = super().fix_dex_pairs(raw, **kwargs)
+        # CCXT standard dex_pairs fixing logic
+        return fixed
+
+    def parse_dex_pairs(self, fixed: list[dict], **kwargs) -> list[dict]:
+        # CCXT standard dex_pairs parsing logic
+        for dex_pair in fixed:
+            dex_pair.update({
+                enums.ExchangeConstantsDexPairsColumns.PRICE.value: decimal.Decimal(str(dex_pair.get(enums.ExchangeConstantsDexPairsColumns.PRICE.value, 0))),
+                enums.ExchangeConstantsDexPairsColumns.QUOTE_LIQUIDITY.value: decimal.Decimal(str(dex_pair.get(enums.ExchangeConstantsDexPairsColumns.QUOTE_LIQUIDITY.value, 0))),
+            })
+        return fixed
 
     def parse_transaction(self, fixed: CCXTTransaction, **kwargs) -> dict:
         # CCXT standard transaction parsing logic

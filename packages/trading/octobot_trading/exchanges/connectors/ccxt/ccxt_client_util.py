@@ -15,6 +15,7 @@
 #  License along with this library.
 import asyncio
 import contextlib
+import cachetools
 try:
     from aiohttp_socks import ProxyConnectionError
 except ImportError:
@@ -62,7 +63,7 @@ def create_client(
         exchange_type = exchange_util.get_exchange_type(exchange_manager)
         logger.info(
             f"Creating {'' if should_be_authenticated_exchange else 'un'}authenticated {exchange_class.__name__} "
-            f"{exchange_type.name} exchange with ccxt in version {ccxt.__version__}"
+            f"{exchange_type.name} exchange with octobot-ccxt in version {ccxt.__version__}"
         )
     if exchange_manager.ignore_config or exchange_manager.check_config(exchange_manager.exchange_name):
         try:
@@ -143,7 +144,9 @@ def instantiate_exchange(
 
 def set_sandbox_mode(exchange_connector, is_sandboxed):
     try:
-        if exchange_connector.exchange_manager.exchange.uses_demo_trading_instead_of_sandbox():
+        if exchange_connector.exchange_manager.exchange.uses_demo_trading_instead_of_sandbox(
+            exchange_util.get_exchange_type(exchange_connector.exchange_manager)
+        ):
             exchange_connector.client.enable_demo_trading(is_sandboxed)
         else:
             exchange_connector.client.set_sandbox_mode(is_sandboxed)
@@ -179,6 +182,9 @@ def filtered_fetched_markets(client, market_filter: typing.Callable[[dict], bool
 
 
 def load_markets_from_cache(client: async_ccxt.Exchange, authenticated_cache: bool, market_filter: typing.Union[None, typing.Callable[[dict], bool]] = None):
+    if not get_option_value(client, enums.ExchangeClientOptions.SUPPORTS_MARKETS_CACHE):
+        _get_logger().info(f"Forcing markets load: {client.name} does not support markets cache")
+        raise KeyError()
     client_key = ccxt_clients_cache.get_client_key(client, authenticated_cache)
     ccxt_clients_cache.apply_exchange_markets_cache(client_key, client, market_filter)
     if time_difference := ccxt_clients_cache.get_exchange_time_difference(client_key):
@@ -187,7 +193,7 @@ def load_markets_from_cache(client: async_ccxt.Exchange, authenticated_cache: bo
 
 
 def set_ccxt_client_cache(client: async_ccxt.Exchange, authenticated_cache: bool):
-    if client.markets:
+    if client.markets and get_option_value(client, enums.ExchangeClientOptions.SUPPORTS_MARKETS_CACHE):
         client_key = ccxt_clients_cache.get_client_key(client, authenticated_cache)
         ccxt_clients_cache.set_exchange_markets_cache(client_key, client)
         if time_difference := client.options.get(ccxt_constants.CCXT_TIME_DIFFERENCE):
@@ -497,6 +503,10 @@ def _use_request_counter(
 
 
 def ccxt_exchange_class_factory(exchange_name):
+    # Prefer OctoBot-specific ccxt subclasses (async_support.ob_<id>) when exported.
+    if not exchange_name.startswith("ob_"):
+        if ob_subclass := getattr(async_ccxt, f"ob_{exchange_name}", None):
+            return ob_subclass
     return getattr(async_ccxt, exchange_name)
 
 
@@ -536,6 +546,61 @@ def _is_retriable_proxy_error(proxy_error: Exception) -> bool:
         if desc in str_err:
             return True
     return False
+
+
+@cachetools.cached(cachetools.LRUCache(maxsize=512))
+def get_option_value_from_new_ccxt_client(
+    exchange: str, option_key: enums.ExchangeClientOptions
+) -> typing.Union[bool, float, int, str, None]:
+    ex_class = ccxt_exchange_class_factory(exchange)
+    return get_option_value(ex_class(), option_key)
+
+
+def get_option_value(
+    client: async_ccxt.Exchange, option_key: enums.ExchangeClientOptions,
+) -> typing.Union[bool, float, int, str, None]:
+    if octobot_options := client.options.get(ccxt_constants.CCXT_OCTOBOT_OPTIONS):
+        return octobot_options.get(option_key.value, enums.DEFAULT_EXCHANGE_OPTION_VALUES[option_key]) # type: ignore
+    return enums.DEFAULT_EXCHANGE_OPTION_VALUES[option_key]
+
+
+def supports_order_type(
+    client: async_ccxt.Exchange, trading_type: enums.ExchangeTypes, order_type: enums.TradeOrderType
+) -> bool:
+    if supported_elements := _get_supported_elements(client, trading_type):
+        supported_order_types = supported_elements.get(enums.ExchangeSupportedElements.ORDERS.value)
+        if supported_order_types is not None:
+            return order_type.value in supported_order_types
+    # default to True for market and limit orders
+    return order_type in [enums.TradeOrderType.MARKET, enums.TradeOrderType.LIMIT]
+
+
+def supports_bundled_orders(
+    client: async_ccxt.Exchange, trading_type: enums.ExchangeTypes, order_type: enums.TradeOrderType
+) -> bool:
+    if supported_elements := _get_supported_elements(client, trading_type):
+        if supported_orders := supported_elements.get(
+            enums.ExchangeSupportedElements.BUNDLED_ORDERS.value
+        ):
+            raise NotImplementedError(f"Bundled orders are not supported yet")
+            return order_type in supported_orders  # pylint: disable=unreachable
+    return False
+
+
+def _get_supported_elements(
+    client: async_ccxt.Exchange, trading_type: enums.ExchangeTypes
+) -> typing.Optional[dict]:
+    if supported_elements := get_option_value(
+        client, enums.ExchangeClientOptions.SUPPORTED_ELEMENTS
+    ):
+        if trading_type == enums.ExchangeTypes.SPOT:
+            return supported_elements.get(
+                enums.ExchangeSupportedElements.SPOT.value,
+            )
+        return supported_elements.get(
+            enums.ExchangeSupportedElements.FUTURES.value
+        )
+    return None
 
 
 def get_proxy_error_if_any(ccxt_connector, error: Exception) -> typing.Optional[Exception]:

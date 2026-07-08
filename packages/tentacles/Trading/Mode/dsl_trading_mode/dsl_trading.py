@@ -33,7 +33,7 @@ class DSLTradingModeConsumer(trading_modes.AbstractTradingModeConsumer):
 
 class DSLTradingModeProducer(trading_modes.AbstractTradingModeProducer):
     async def set_final_eval(
-        self, matrix_id: str, cryptocurrency: str, symbol: str, time_frame, trigger_source: str
+        self, matrix_id: str, cryptocurrency: str, symbol: str, time_frame, trigger_source: str,
     ):
         self.logger.info(
             f"Executing DSL script trigger by {matrix_id=}, {cryptocurrency=}, {symbol=}, {time_frame=}, {trigger_source=}"
@@ -114,6 +114,7 @@ class DSLTradingMode(trading_modes.AbstractTradingMode):
         return dsl_interpreter.Interpreter(
             dsl_interpreter.get_all_operators()
             + dsl_operators.create_ohlcv_operators(self.exchange_manager, None, None)
+            + dsl_operators.create_price_operators(self.exchange_manager, None)
             + dsl_operators.create_portfolio_operators(self.exchange_manager)
             + dsl_operators.create_create_order_operators(
                 self.exchange_manager, trading_mode=self, dependencies=dependencies

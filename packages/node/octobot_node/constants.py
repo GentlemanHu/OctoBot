@@ -14,6 +14,7 @@
 #  You should have received a copy of the GNU General Public
 #  License along with OctoBot. If not, see <https://www.gnu.org/licenses/>.
 import os
+import uuid
 
 try:
     import octobot.constants as octobot_constants
@@ -24,16 +25,48 @@ except ImportError:
 AUTOMATION_LOGS_FOLDER = f"{BASE_LOGS_FOLDER}/automations"
 PARENT_WORKFLOW_ID_LENGTH = 36 # length of a UUID4
 
-# default to 10 retry after 1, 2, 4, 8, 16, ... 1024 seconds (total of 2047 seconds)
+# default to 19 retry after 1, 2.5, 4.75, 8.125, 13.188, ... 2953.784 seconds (total of 4430 seconds)
 AUTOMATION_WORKFLOW_RETRY_INTERVAL_SECONDS = float(os.getenv("AUTOMATION_WORKFLOW_RETRY_INTERVAL_SECONDS", 1.0))
-AUTOMATION_WORKFLOW_MAX_ITERATION_RETRIES = int(os.getenv("AUTOMATION_WORKFLOW_MAX_ITERATION_RETRIES", 10))
-AUTOMATION_WORKFLOW_BACKOFF_RATE = float(os.getenv("AUTOMATION_WORKFLOW_BACKOFF_RATE", 2))
+AUTOMATION_WORKFLOW_MAX_ITERATION_RETRIES = int(os.getenv("AUTOMATION_WORKFLOW_MAX_ITERATION_RETRIES", 19))
+AUTOMATION_WORKFLOW_BACKOFF_RATE = float(os.getenv("AUTOMATION_WORKFLOW_BACKOFF_RATE", 1.5))
+
+# delay between authentication errors retry attempts of the current iteration (30 minutes)
+INVALID_AUTHENTICATION_RETRY_DELAY_SECONDS = float(os.getenv("INVALID_AUTHENTICATION_RETRY_DELAY_SECONDS", 1800))
+
+# default to 6 retries after 2, 4, 8, 16, ... 64 seconds (total of 126 seconds)
+USER_ACTION_WORKFLOW_RETRY_INTERVAL_SECONDS = float(os.getenv("USER_ACTION_WORKFLOW_RETRY_INTERVAL_SECONDS", 2))
+USER_ACTION_WORKFLOW_MAX_ITERATION_RETRIES = int(os.getenv("USER_ACTION_WORKFLOW_MAX_ITERATION_RETRIES", 6))
+USER_ACTION_WORKFLOW_BACKOFF_RATE = float(os.getenv("USER_ACTION_WORKFLOW_BACKOFF_RATE", 2))
+
+# run_octobot_process DSL recall interval and init-state timeout for child OctoBot spawns.
+RUN_OCTOBOT_PROCESS_WAITING_TIME_SECONDS = float(
+    os.getenv("RUN_OCTOBOT_PROCESS_WAITING_TIME_SECONDS", 60.0)
+)
+RUN_OCTOBOT_PROCESS_PING_TIMEOUT_SECONDS = float(
+    os.getenv("RUN_OCTOBOT_PROCESS_PING_TIMEOUT_SECONDS", 150.0)
+)
 
 TASKS_ENCRYPTION_ENV_VARS = [
     "TASKS_SERVER_RSA_PRIVATE_KEY",
     "TASKS_SERVER_ECDSA_PRIVATE_KEY",
 ]
 
-EXCHANGE_ACCOUNTS_STATE_VERSION = "1.0.0"
-AUTOMATIONS_STATE_VERSION = "1.0.0"
+FAILURE_ERROR_DETAILS_MAX_LENGTH = 8_000
 
+# Retry active automation workflow delivery while the child workflow is between DBOS workflows.
+AUTOMATION_WORKFLOW_ACTIVE_SEND_RETRY_SECONDS = float(
+    os.getenv(
+        "AUTOMATION_WORKFLOW_ACTIVE_SEND_RETRY_SECONDS",
+        os.getenv("STOP_AUTOMATION_DELIVERY_RETRY_SECONDS", 2.0),
+    )
+)
+AUTOMATION_WORKFLOW_ACTIVE_SEND_POLL_INTERVAL_SECONDS = float(
+    os.getenv(
+        "AUTOMATION_WORKFLOW_ACTIVE_SEND_POLL_INTERVAL_SECONDS",
+        os.getenv("STOP_AUTOMATION_DELIVERY_POLL_INTERVAL_SECONDS", 0.05),
+    )
+)
+
+DEFAULT_PORTFOLIO_VALUATION_UNIT = "USDT"
+
+SCHEDULER_EXECUTOR_ID = str(uuid.uuid4()) # unique for each worker

@@ -70,6 +70,11 @@ class OHLCVUpdater(ohlcv_channel.OHLCVProducer):
         """
         Creates OHLCV refresh tasks
         """
+        if self.channel.exchange_manager.exchange.get_option_value(
+            enums.ExchangeClientOptions.CREATE_OHLCV_FROM_TICKERS
+        ):
+            self.logger.info("Fetching OHLCVs is not supported for this exchange. Cannot start OHLCV updater.")
+            return
         if self.single_update_task and not self.single_update_task.done():
             await asyncio.wait_for(self.single_update_task, self.OHLCV_INITIALIZATION_TIMEOUT)
         pairs = self._get_traded_pairs()
@@ -280,7 +285,9 @@ class OHLCVUpdater(ohlcv_channel.OHLCVProducer):
             return ohlcvs
         except errors.NotSupported as err:
             if (
-                self.channel.exchange_manager.exchange.CREATE_OHLCV_FROM_TICKERS
+                self.channel.exchange_manager.exchange.get_option_value(
+                    enums.ExchangeClientOptions.CREATE_OHLCV_FROM_TICKERS
+                )
                 and tickers_backup and symbol in tickers_backup
             ):
                 self.logger.info(f"Fetching OHLCVs is not supported: {err}. Falling back to tickers data.")

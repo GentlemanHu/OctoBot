@@ -18,12 +18,15 @@ import octobot_trading.constants
 import octobot_trading.errors
 import octobot_trading.exchange_data
 import octobot_trading.exchanges
+import octobot_trading.dsl.dsl_dependencies as dsl_dependencies
 import octobot_flow.entities
 import octobot.community.supabase_backend.enums as community_enums
 
 import octobot_tentacles_manager.api
+import octobot_protocol.models as protocol_models
+import octobot_protocol.models.market_making_configuration as market_making_configuration_model
 
-import tentacles.Services.Interfaces.node_api_interface.core.exchanges as exchanges_core
+import tentacles.Meta.DSL_operators.exchange_operators as exchange_operators
 import tentacles.Trading.Mode.simple_market_making_trading_mode.simple_market_making_trading as \
     simple_market_making_trading
 import tentacles.Trading.Mode.simple_market_making_trading_mode.advanced_reference_price as \
@@ -36,8 +39,8 @@ import tentacles.Trading.Mode.simple_market_making_trading_mode.api.constants as
 
 
 async def get_market_making_profile_data(
-    exchange_configs: list[exchanges_core.ExchangeConfig], 
-    market_making_config: typing.Optional[dict], 
+    exchange_configs: list[protocol_models.ExchangeConfig],
+    market_making_config: typing.Optional[market_making_configuration_model.MarketMakingConfiguration],
     user_auth: typing.Optional[octobot_flow.entities.UserAuthentication]
 ) -> octobot_commons.profiles.ProfileData:
     if market_making_config:
@@ -63,19 +66,17 @@ async def _fill_market_making_data_by_symbol(
         exchange_internal_name, exchange_type, sandboxed
     )
     tickers = {}
-    missing_tickers = []
     symbols = [source.pair for source in price_sources]
+    dependency_symbols: set[str] = set()
     if cached_tickers:
         tickers = {
             symbol: ticker
             for symbol, ticker in cached_tickers.items()
             if symbol in symbols
         }
-        missing_tickers = [symbol for symbol in symbols if symbol not in tickers]
-    has_formula = False
-    for source in price_sources:
-        if source.formula:
-            has_formula = True
+    missing_tickers = [symbol for symbol in symbols if symbol not in tickers]
+    has_formula = any(source.formula for source in price_sources)
+    dependency_symbol_alias_by_symbol: dict[str, typing.Optional[str]] = {}
 
     if has_formula or missing_tickers or not cached_tickers:
         tentacles_setup_config = octobot_tentacles_manager.api.get_full_tentacles_setup_config()
@@ -86,15 +87,6 @@ async def _fill_market_making_data_by_symbol(
                 exchange_manager,
                 create_authenticated_producers=False,
             )
-            tickers, ticker_updater = await _fetch_tickers(
-                exchange_manager, tickers, symbols
-            )
-            if missing_tickers := [symbol for symbol in symbols if symbol not in tickers]:
-                cached_tickers = octobot_trading.exchange_data.TickerUpdater.get_ticker_cache().get_all_tickers(
-                    exchange_internal_name, exchange_type, sandboxed, default={}
-                )
-                # fetch missing tickers
-                tickers.update(await ticker_updater.fetch_all_tickers(missing_tickers))
             dependencies = set()
             for source in price_sources:
                 if source.formula:
@@ -103,6 +95,55 @@ async def _fill_market_making_data_by_symbol(
                     except octobot_commons.errors.DSLInterpreterError as err:
                         raise ValueError(f"Invalid {source.pair} reference price formula: {err}") from err
                     dependencies.update(source.get_dependencies(exchange_manager))
+                    await dsl_dependencies.resolve_missing_dependencies_if_required(
+                        dependencies, exchange_manager
+                    )
+
+            for dependency in dependencies:
+                if not dependency.symbol:
+                    continue
+                if dependency.alias:
+                    dependency_symbol_alias_by_symbol[dependency.symbol] = dependency.alias
+                elif dependency.symbol not in dependency_symbol_alias_by_symbol:
+                    dependency_symbol_alias_by_symbol[dependency.symbol] = None
+            available_symbols = set(exchange_manager.exchange.get_all_available_symbols(active_only=True))
+            lazy_load_markets = exchange_manager.exchange.get_option_value(
+                octobot_trading.enums.ExchangeClientOptions.LAZY_LOAD_MARKETS
+            )
+            if lazy_load_markets:
+                symbols_to_skip_ticker_fetch = {
+                    source.pair
+                    for source in price_sources
+                    if source.formula and source.pair not in available_symbols
+                }
+            else:
+                symbols_to_skip_ticker_fetch = {
+                    symbol for symbol in (set(symbols) | set(dependency_symbol_alias_by_symbol.keys()))
+                    if symbol not in available_symbols
+                }
+            if symbols_to_skip_ticker_fetch:
+                _get_logger().info(
+                    f"Ignored unavailable pairs on [{exchange_internal_name}]: "
+                    f"{sorted(symbols_to_skip_ticker_fetch)}"
+                )
+            symbols_to_fetch = (set(symbols) | set(dependency_symbol_alias_by_symbol.keys())) - symbols_to_skip_ticker_fetch
+            tickers = {
+                symbol: ticker
+                for symbol, ticker in tickers.items()
+                if symbol in symbols_to_fetch
+            }
+            tickers, ticker_updater = await _fetch_tickers(
+                exchange_manager, tickers, list(symbols_to_fetch)
+            )
+            if missing_tickers_to_fetch := [
+                symbol for symbol in symbols_to_fetch
+                if symbol not in tickers
+                and (lazy_load_markets or symbol in available_symbols)
+            ]:
+                try:
+                    tickers.update(await ticker_updater.fetch_all_tickers(missing_tickers_to_fetch))
+                except octobot_trading.errors.NotSupported as err:
+                    _get_logger().info(f"Fetching tickers for {missing_tickers_to_fetch} is not supported: {err}")
 
             to_fetch_candles_by_time_frame = {}
             for dependency in dependencies:
@@ -117,8 +158,8 @@ async def _fill_market_making_data_by_symbol(
                         exchange_manager, octobot_trading.constants.OHLCV_CHANNEL
                     )
                 )
-                for time_frame, symbols in to_fetch_candles_by_time_frame.items():
-                    for symbol in symbols:
+                for time_frame, candle_symbols in to_fetch_candles_by_time_frame.items():
+                    for symbol in candle_symbols:
                         ohlcvs = await ohlcv_updater.fetch_ohlcv(
                             symbol, octobot_commons.enums.TimeFrames(time_frame), 5, allow_cache=True, tickers_backup=tickers
                         )
@@ -126,6 +167,7 @@ async def _fill_market_making_data_by_symbol(
                             octobot_trading.exchanges.MarketDetails.from_ohlcvs(symbol, time_frame, ohlcvs)
                         )
     market_statuses = {}
+    all_symbols = set(symbols) | set(dependency_symbol_alias_by_symbol.keys())
     if with_market_status:
         tentacles_setup_config = octobot_tentacles_manager.api.get_full_tentacles_setup_config()
         async with octobot_trading.exchanges.exchange_manager_from_exchange_data(
@@ -133,21 +175,23 @@ async def _fill_market_making_data_by_symbol(
         ) as exchange_manager:
             market_statuses.update({
                 symbol: exchange_manager.exchange.get_market_status(symbol, with_fixer=False)
-                for symbol in symbols
+                for symbol in all_symbols
             })
     mm_data_by_symbol_by_exchange[exchange_internal_name] = {}
-    for symbol, ticker in tickers.items():
+    for symbol in all_symbols:
         try:
             market_details = [
-                market_detail 
-                for market_detail in exchange_data.markets 
+                market_detail
+                for market_detail in exchange_data.markets
                 if market_detail.symbol == symbol
             ]
+            symbol_alias = dependency_symbol_alias_by_symbol.get(symbol)
             mm_data_by_symbol_by_exchange[exchange_internal_name][symbol] = _create_market_data(
-                exchange_internal_name, symbol, ticker, market_statuses, market_details
+                exchange_internal_name, symbol, symbol_alias, tickers.get(symbol), market_statuses, market_details
             )
         except decimal.DecimalException as err:
-            _get_logger().warning(f"Ignored market data for {symbol} ({err}), {ticker=}")
+            _get_logger().exception(err, False)
+            _get_logger().warning(f"Ignored market data for {symbol} ({err}), ticker={tickers.get(symbol)}")
 
 async def _get_market_making_data_by_exchange(
     profile_data: octobot_commons.profiles.ProfileData,
@@ -329,16 +373,23 @@ def get_market_making_trading_mode(market_making_trading_mode: str):
     }[market_making_trading_mode]
 
 
-def _create_profile_exchange_data(exchange_config: exchanges_core.ExchangeConfig) -> octobot_commons.profiles.profile_data.ExchangeData:
+def _create_profile_exchange_data(
+    exchange_config: protocol_models.ExchangeConfig,
+    traded_symbols: list[str] | None = None,
+) -> octobot_commons.profiles.profile_data.ExchangeData:
+    if traded_symbols:
+        exchange_type = commons_symbols.trading_type_from_traded_symbols(traded_symbols)
+    else:
+        exchange_type = octobot_commons.constants.DEFAULT_EXCHANGE_TYPE
     return octobot_commons.profiles.profile_data.ExchangeData(
-        internal_name=exchange_config.name,
-        exchange_type=exchange_config.exchange_type if exchange_config.exchange_type else octobot_trading.enums.ExchangeTypes.SPOT.value,
+        internal_name=exchange_config.exchange,
+        exchange_type=exchange_type,
         sandboxed=exchange_config.sandboxed,
     )
 
 
 async def get_market_making_exchange_only_profile_data(
-    exchange_configs: list[exchanges_core.ExchangeConfig], 
+    exchange_configs: list[protocol_models.ExchangeConfig],
     user_auth: typing.Optional[octobot_flow.entities.UserAuthentication]
 ) -> octobot_commons.profiles.ProfileData:
     profile_data = octobot_commons.profiles.ProfileData(
@@ -362,7 +413,9 @@ async def get_market_making_exchange_only_profile_data(
 
 
 async def _get_market_making_profile_data(
-    exchange_configs: list[exchanges_core.ExchangeConfig], market_making_config: dict, auth: typing.Optional[octobot_flow.entities.UserAuthentication]
+    exchange_configs: list[protocol_models.ExchangeConfig],
+    market_making_config: market_making_configuration_model.MarketMakingConfiguration,
+    auth: typing.Optional[octobot_flow.entities.UserAuthentication]
 ) -> octobot_commons.profiles.ProfileData:
     if not market_making_config:
         raise ValueError(f"{market_making_config} is empty")
@@ -371,17 +424,41 @@ async def _get_market_making_profile_data(
         [],
         octobot_commons.profiles.profile_data.TradingData("")
     )
-    tentacles_data = octobot_commons.profiles.profile_data.TentaclesData.from_dict(market_making_config)
+    translated_market_making_config = _to_simple_market_making_tentacle_config(
+        market_making_config
+    )
+    tentacles_data = octobot_commons.profiles.profile_data.TentaclesData.from_dict(
+        {
+            "name": simple_market_making_trading.SimpleMarketMakingTradingMode.get_name(),
+            "config": translated_market_making_config,
+        }
+    )
     await _apply_market_making_translator(
         profile_data, tentacles_data, exchange_configs, auth
     )
     return profile_data
 
 
+def _to_simple_market_making_tentacle_config(
+    market_making_configuration: market_making_configuration_model.MarketMakingConfiguration,
+) -> dict:
+    # Protocol config uses symbol_configurations/symbol, while the existing
+    # SimpleMarketMakingProfileDataAdapter expects pair_settings/trading_pair.
+    return {
+        simple_market_making_trading.SimpleMarketMakingTradingMode.CONFIG_PAIR_SETTINGS: [
+            symbol_configuration.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode="json",
+            ) for symbol_configuration in market_making_configuration.pair_settings
+        ]
+    }
+
+
 async def _apply_market_making_translator(
     profile_data: octobot_commons.profiles.ProfileData, 
     tentacles_data: octobot_commons.profiles.profile_data.TentaclesData, 
-    exchange_configs: list[exchanges_core.ExchangeConfig], 
+    exchange_configs: list[protocol_models.ExchangeConfig], 
     auth: typing.Optional[octobot_flow.entities.UserAuthentication]
 ):
     additional_data = {
@@ -423,7 +500,7 @@ async def _apply_market_making_translator(
     await translator.translate([tentacles_data], additional_data, None, None)
 
 
-def _requires_exchange_auth(exchange_configs: list[exchanges_core.ExchangeConfig]) -> bool:
+def _requires_exchange_auth(exchange_configs: list[protocol_models.ExchangeConfig]) -> bool:
     return simple_market_making_profile_data_adapter.SimpleMarketMakingProfileDataAdapter.requires_exchange_auth(
         [exchange.model_dump() for exchange in exchange_configs]
     )
@@ -543,10 +620,23 @@ async def get_reference_price_by_pair(
             candle_manager_by_time_frame_by_symbol = _get_candle_manager_by_time_frame_by_symbol(
                 mm_data_by_exchange[exchange_internal_name]
             )
+            price_by_symbol = {
+                **{
+                    mm_data.pair_alias: mm_data.price 
+                    for mm_data in mm_data_by_exchange[exchange_internal_name].values()
+                    if mm_data.pair_alias
+                },
+                **{
+                    mm_data.pair: mm_data.price
+                    for mm_data in mm_data_by_exchange[exchange_internal_name].values()
+                }
+            }
             for source in sources:
                 try:
                     if source.formula:
-                        await source.initialize_if_required(None, candle_manager_by_time_frame_by_symbol)
+                        await source.initialize_if_required(
+                            None, candle_manager_by_time_frame_by_symbol, price_by_symbol
+                        )
                     price_by_source[exchange][source.pair] = mm_data_by_exchange[exchange_internal_name][source.pair].price
                 except octobot_commons.errors.DSLInterpreterError as err:
                     error_by_pair[pair] = f"Invalid {source.pair} reference price formula: {err}"
@@ -560,10 +650,11 @@ async def get_reference_price_by_pair(
             reference_price_by_pair[pair] = await advanced_reference_price_import.compute_reference_price(
                 price_by_source, price_sources_by_exchange
             )
-        except (NotImplementedError, TypeError) as err:
+        except (NotImplementedError, TypeError, ValueError) as err:
             error_by_pair[pair] = f"{err}"
             continue
-        if not reference_price_by_pair[pair]:
+        reference_price = reference_price_by_pair[pair]
+        if not reference_price or reference_price.is_nan():
             error_by_pair[pair] = (
                 f"{pair} reference price on {mm_exchange} can't be computed from the following "
                 f"price sources: {price_by_source}"
@@ -620,7 +711,8 @@ async def _get_price_and_predicted_order_book(
     )
     books_by_symbol = {}
     for pair, reference_price in reference_price_by_pair.items():
-        if not reference_price:
+        if not reference_price or reference_price.is_nan():
+            error_by_pair[pair] = _get_unsupported_pair_message(pair, mm_exchange)
             continue
         mm_data = mm_data_by_exchange[mm_exchange].get(pair)
         _adapt_volume_if_necessary(mm_data, reference_price)
@@ -669,6 +761,10 @@ def _get_missing_symbol_message(symbol: str, exchange: str) -> str:
     )
 
 
+def _get_unsupported_pair_message(pair: str, exchange: str) -> str:
+    return f"{pair} is not supported on {exchange}"
+
+
 def _format_format_market_making_volume(volume: typing.Union[dict, None], error: typing.Union[str, None]):
     return {
         constants.VOLUME_KEY: volume,
@@ -676,26 +772,55 @@ def _format_format_market_making_volume(volume: typing.Union[dict, None], error:
     }
 
 
+def _parse_ticker_close_as_decimal(ticker: typing.Optional[dict]) -> decimal.Decimal:
+    if not ticker:
+        return decimal.Decimal("nan")
+    close_column = octobot_trading.enums.ExchangeConstantsTickersColumns.CLOSE.value
+    last_column = octobot_trading.enums.ExchangeConstantsTickersColumns.LAST.value
+    for column in (close_column, last_column):
+        raw_value = ticker.get(column)
+        if raw_value is None:
+            continue
+        try:
+            parsed_price = decimal.Decimal(str(raw_value))
+        except decimal.DecimalException:
+            continue
+        if parsed_price.is_nan() or parsed_price <= 0:
+            continue
+        return parsed_price
+    return decimal.Decimal("nan")
+
+
 def _create_market_data(
     exchange_internal_name: str, 
-    symbol: str, 
-    ticker: dict, 
+    symbol: str,
+    pair_alias: typing.Optional[str],
+    ticker: typing.Optional[dict], 
     market_statuses: dict, 
     market_details: list[octobot_trading.exchanges.MarketDetails]
 ) -> models.MarketMakingData:
+    default_volume = octobot_trading.constants.ZERO
+    if ticker is None:
+        price = decimal.Decimal("nan")
+        base_volume = quote_volume = default_volume
+    else:
+        price = _parse_ticker_close_as_decimal(ticker)
+        if price.is_nan():
+            base_volume = quote_volume = default_volume
+        else:
+            try:
+                base_volume, quote_volume = octobot_trading.api.get_daily_base_and_quote_volume_from_ticker(
+                    ticker, reference_price=price
+                )
+            except ValueError:
+                base_volume = quote_volume = default_volume
     return models.MarketMakingData(
         exchange_internal_name,
         symbol,
-        decimal.Decimal(str(ticker[octobot_trading.enums.ExchangeConstantsTickersColumns.CLOSE.value])),
-        decimal.Decimal(str(ticker[octobot_trading.enums.ExchangeConstantsTickersColumns.BASE_VOLUME.value])),
-        decimal.Decimal(str(
-            ticker[octobot_trading.enums.ExchangeConstantsTickersColumns.QUOTE_VOLUME.value] or
-            (
-                # fallback in case of missing quote volume in ticker
-                    decimal.Decimal(str(ticker[octobot_trading.enums.ExchangeConstantsTickersColumns.BASE_VOLUME.value])) *
-                    decimal.Decimal(str(ticker[octobot_trading.enums.ExchangeConstantsTickersColumns.CLOSE.value]))
-            )
-        )),
+        pair_alias,
+        price,
+        base_volume,
+        quote_volume,
         market_statuses.get(symbol, None),
         market_details,
     )
@@ -983,7 +1108,11 @@ async def _fetch_tickers(
         )
     )
     if not tickers:
-        tickers = await ticker_updater.fetch_all_tickers(symbols)
+        try:
+            tickers = await ticker_updater.fetch_all_tickers(symbols)
+        except octobot_trading.errors.NotSupported as err:
+            _get_logger().info(f"Fetching tickers for {symbols} is not supported: {err}")
+            tickers = {}
     return tickers, ticker_updater
 
 

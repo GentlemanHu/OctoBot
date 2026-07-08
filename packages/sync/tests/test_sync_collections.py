@@ -58,7 +58,7 @@ def test_bundled_collections():
     names = {c.name for c in bundled}
     assert names == {"alpha-docs", "beta-prefs"}
     for c in bundled:
-        assert c.encryption == "identity"
+        assert c.encryption == "delegated"
         assert c.storage_path == "users/{identity}"
 
 
@@ -69,9 +69,9 @@ def test_pull_only_collections():
 
 
 def test_server_encrypted_collections():
-    server_encrypted = [c for c in _load().collections if c.encryption == "server"]
-    assert len(server_encrypted) == 1
-    assert server_encrypted[0].name == "zeta-internal"
+    # In v3, zeta-internal uses "delegated" encryption (v2 "server" is removed)
+    zeta = next(c for c in _load().collections if c.name == "zeta-internal")
+    assert zeta.encryption == "delegated"
 
 
 def test_rate_limit_config():
@@ -87,14 +87,49 @@ def test_fallback_to_default_config():
     assert config.version == 1
     assert config.namespaces is not None
     ns_collections = config.namespaces["octobot"].collections
-    assert len(ns_collections) == 4
+    # 8 standard user collections + 1 temporary product-scoped append-only log.
+    assert len(ns_collections) == 10
     by_name = {c.name: c for c in ns_collections}
-    assert set(by_name) == {"user-data", "user-accounts", "user-settings", "user-strategies"}
+    assert set(by_name) == {
+        "user-data",
+        "user-accounts",
+        "user-accounts-auth",
+        "user-accounts-trading",
+        "user-accounts-history",
+        "user-settings",
+        "user-strategies",
+        "user-actions",
+        "debug",
+        "product-signals",
+    }
     assert by_name["user-data"].storage_path == "users/{identity}/data"
     assert by_name["user-accounts"].storage_path == "users/{identity}/accounts"
+    assert by_name["user-accounts-auth"].storage_path == "users/{identity}/accounts/auth"
+    assert by_name["user-accounts-trading"].storage_path == "users/{identity}/accounts/{account_id}/trading"
+    assert by_name["user-accounts-history"].storage_path == "users/{identity}/accounts/{account_id}/history"
     assert by_name["user-settings"].storage_path == "users/{identity}/settings"
     assert by_name["user-strategies"].storage_path == "users/{identity}/strategies"
-    for col in ns_collections:
+    assert by_name["user-actions"].storage_path == "users/{identity}/actions"
+    assert by_name["debug"].storage_path == "users/{identity}/debug"
+    # The 8 standard user collections are "self"-scoped and "delegated"; the
+    # temporary product-signals log is a product-scoped (device:root) plaintext
+    # append-only by_timestamp collection.
+    for name, col in by_name.items():
+        if name == "product-signals":
+            continue
         assert col.read_roles == ["self"]
         assert col.write_roles == ["self"]
-        assert col.encryption == "identity"
+        assert col.encryption == "delegated"
+    signals = by_name["product-signals"]
+    assert signals.storage_path == "products/{product_id}/{version}/signals"
+    assert signals.read_roles == ["device:root"]
+    assert signals.write_roles == ["device:root"]
+    assert signals.encryption == "none"
+    assert signals.append_only is not None
+    assert signals.append_only.type == "by_timestamp"
+    assert signals.append_only.require_author_signature is False
+    actions = by_name["user-actions"]
+    assert actions.append_only is not None
+    assert actions.append_only.type == "by_timestamp"
+    assert actions.append_only.persist is False
+    assert actions.append_only.require_author_signature is False
