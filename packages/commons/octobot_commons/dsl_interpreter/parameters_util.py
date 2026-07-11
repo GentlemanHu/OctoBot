@@ -13,13 +13,53 @@
 #
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
+import ast
+import decimal
 import re
 import typing
 import json
 
+import numpy
+
 import octobot_commons.dsl_interpreter.operator as dsl_interpreter_operator
 import octobot_commons.errors
 import octobot_commons.constants
+
+
+def _normalize_dsl_serializable_value(value: typing.Any) -> typing.Any:
+    """
+    Convert nested values to types that repr() into valid DSL literals.
+    """
+    if isinstance(value, type):
+        return value.__name__
+    if isinstance(value, numpy.generic):
+        return value.item()
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {
+            key: _normalize_dsl_serializable_value(nested_value)
+            for key, nested_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_dsl_serializable_value(nested_value) for nested_value in value]
+    return value
+
+
+def get_dsl_statement_operator_name(dsl_script: str) -> str:
+    """
+    Extract the root operator name from a single-call DSL expression.
+    """
+    try:
+        parsed_expression = ast.parse(dsl_script, mode="eval")
+    except SyntaxError as error:
+        raise ValueError(f"Cannot parse DSL script operator name from: {dsl_script}") from error
+    if not isinstance(parsed_expression.body, ast.Call):
+        raise ValueError(f"DSL script is not a single operator call: {dsl_script}")
+    function_node = parsed_expression.body.func
+    if isinstance(function_node, ast.Name):
+        return function_node.id
+    raise ValueError(f"Cannot extract operator name from DSL script: {dsl_script}")
 
 
 def format_parameter_value(value: typing.Any) -> str: # pylint: disable=too-many-return-statements
@@ -31,6 +71,10 @@ def format_parameter_value(value: typing.Any) -> str: # pylint: disable=too-many
         return "None"
     if isinstance(value, bool):
         return "True" if value else "False"
+    if isinstance(value, numpy.generic):
+        return repr(value.item())
+    if isinstance(value, decimal.Decimal):
+        return repr(float(value))
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
@@ -43,9 +87,9 @@ def format_parameter_value(value: typing.Any) -> str: # pylint: disable=too-many
         except (json.JSONDecodeError, TypeError):
             return repr(value)
     if isinstance(value, list):
-        return repr(value)
+        return repr(_normalize_dsl_serializable_value(value))
     if isinstance(value, dict):
-        return repr(value)
+        return repr(_normalize_dsl_serializable_value(value))
     return repr(value)
 
 
@@ -119,18 +163,16 @@ def apply_resolved_parameter_value(script: str, parameter: str, value: typing.An
     """
     Apply a resolved parameter value to a DSL script.
     """
-    to_replace = f"{parameter}={octobot_commons.constants.UNRESOLVED_PARAMETER_PLACEHOLDER}"
-    if to_replace in script:
-        return script.replace(
-            to_replace,
-            f"{parameter}={format_parameter_value(value)}"
-        )
-    to_replace_in_dict = f"{parameter!r}: {octobot_commons.constants.UNRESOLVED_PARAMETER_PLACEHOLDER!r}"
-    if to_replace_in_dict in script:
-        return script.replace(
-            to_replace_in_dict,
-            f"{parameter!r}: {format_parameter_value(value)}"
-        )
+    unresolved = octobot_commons.constants.UNRESOLVED_PARAMETER_PLACEHOLDER
+    formatted_value = format_parameter_value(value)
+    possible_to_replace = [
+        (f"{parameter}={unresolved}", f"{parameter}={formatted_value}"),
+        (f"{parameter!r}: {unresolved!r}", f"{parameter!r}: {formatted_value}"),
+        (f"{parameter!r}: {unresolved}", f"{parameter!r}: {formatted_value}"),
+    ]
+    for to_replace, replacement in possible_to_replace:
+        if to_replace in script:
+            return script.replace(to_replace, replacement)
     raise octobot_commons.errors.ResolvedParameterNotFoundError(
         f"Parameter {parameter} not found in script: {script}"
     )

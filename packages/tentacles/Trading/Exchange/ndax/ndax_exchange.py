@@ -18,10 +18,6 @@ import octobot_trading.enums as trading_enums
 
 
 class Ndax(exchanges.RestExchange):
-    DESCRIPTION = ""
-
-    FIX_MARKET_STATUS = True
-
     DEFAULT_MAX_LIMIT = 500
 
     @classmethod

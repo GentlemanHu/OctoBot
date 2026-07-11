@@ -110,8 +110,9 @@ CREATE_ICEBERG_DB_IF_MISSING = os_util.parse_boolean_environment_var("CREATE_ICE
 OCTOBOT_MARKET_MAKING_URL = os.getenv("OCTOBOT_MARKET_MAKING_URL", "https://market-making.octobot.cloud")
 
 # sync server
-SYNC_SERVER_URL = os.getenv("SYNC_SERVER_URL", "https://prod-sync.drakkar.software")
-STAGING_SYNC_SERVER_URL = os.getenv("SYNC_SERVER_URL", "https://beta-sync.drakkar.software")
+SYNC_SERVER_URL = os.getenv("SYNC_SERVER_URL", "https://prod-sync.drakkar.software/sync")
+STAGING_SYNC_SERVER_URL = os.getenv("SYNC_SERVER_URL", "https://beta-sync.drakkar.software/sync")
+SYNC_NAMESPACE=os.getenv("SYNC_NAMESPACE", "dk")
 SYNC_CHAIN_ID = os.getenv("SYNC_CHAIN_ID", "evm:8453")
 
 ERROR_TRACKER_DSN = os.getenv("ERROR_TRACKER_DSN")
@@ -206,6 +207,10 @@ DEFAULT_TENTACLES_PACKAGE_NAME = "OctoBot-Default-Tentacles"
 # logs
 DEFAULT_LOGS_FOLDER = "logs"
 LOGS_FOLDER = os.getenv("LOGS_FOLDER", DEFAULT_LOGS_FOLDER)
+
+# support
+OCTOCHAT_SUPPORT_DESK_REQUEST_LINK=os.getenv("OCTOCHAT_SUPPORT_DESK_REQUEST_LINK", "https://chat.drakkar.software/request?s=sp-48521ba952b06d7eb960b96655d9f1ee#WyJodHRwczovL2NoYXQuZHJha2thci5zb2Z0d2FyZSIsInJlcXVlc3QiLHsidiI6Miwib3duZXJJZCI6Ijg1ZGJlYzQ4ZWY0YmUyZTFlNmVhZTcwYWE3ODc5YTBlIiwicHNldWRvIjoiSGVya2xvcyIsImVkUHViIjoiYTRmZjQ3NDQ4NDY1OTNmMzgyMjcxNWNjYmVhOWM4MWNiMThmYmM1NzNlOWZiYjAyNWJjNDlmYTBhODYwNTFlNyIsImtlbVB1YiI6IjAwNzQ0MjZlN2IzZTMzNDdkNmI5ZWEwMGIwYWFhMzFmM2UyZjRjNDQ5ZjFmODc3Y2JjOTg1YzEyNDExNDlhMTAiLCJrZW1TaWciOiJhYmVmZTgzZTgzYjJjZDk0NGZiMjdjZmQxODQyOTQwZDdlYzEyYTJlNGRjZmZkNGU1NWIwNzk1NWJmMGFiY2FjNGUxNjFiN2VkOTg0MDFjN2U4NmUwNDdkMTc1ZmNjYzJjMTYxY2MyZjE2M2ZiYzJkZGQ5MjFlN2U5YTY5OWIwZCJ9XQ")
+OCTOCHAT_WEB_BASE = os.getenv("OCTOCHAT_WEB_BASE", None)
 
 # Process bot state JSON next to user config (--dump-state); liveness for run_octobot_process
 PROCESS_BOT_STATE_FILE_NAME = "process_bot_state.json"

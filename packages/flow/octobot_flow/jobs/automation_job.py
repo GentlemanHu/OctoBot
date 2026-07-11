@@ -5,6 +5,7 @@ import typing
 import octobot_commons.json_util as json_util
 import octobot_commons.logging as common_logging
 import octobot.community
+import octobot.community.wallet_backend.errors as wallet_backend_errors
 import octobot_commons.profiles.profile_data as profile_data_import
 
 import octobot_copy.constants as copy_constants
@@ -17,6 +18,7 @@ import octobot_flow.logic.configuration
 import octobot_flow.logic.dsl
 import octobot_flow.repositories.community
 import octobot_flow.encryption
+
 import octobot_flow.jobs.exchange_account_job as exchange_account_job_import
 import octobot_flow.jobs.automation_runner_job as automation_runner_job_import
 
@@ -266,8 +268,15 @@ class AutomationJob:
             f"account with id: {exchange_account_details.exchange_details.exchange_account_id}"
         )
         self._logger.info(f"Initializing all required data for {exchange_summary}.")
+        to_execute_actions_ids = {
+            executable_action.id for executable_action in to_execute_actions
+        }
+        actions_for_exchange_data_fetch = to_execute_actions + [
+            action for action in self.fetched_actions
+            if action.id not in to_execute_actions_ids
+        ]
         exchange_account_job = exchange_account_job_import.ExchangeAccountJob(
-            self.automation_state, self.fetched_actions
+            self.automation_state, actions_for_exchange_data_fetch
         )
         symbols = set(
             exchange_account_job.get_all_actions_symbols(minimal_profile_data)
@@ -275,6 +284,9 @@ class AutomationJob:
                 to_execute_actions, minimal_profile_data
             )
         )
+        account_elements = self.automation_state.automation.exchange_account_elements
+        if account_elements is not None:
+            symbols.update(account_elements.get_open_orders_symbols())
         async with exchange_account_job.account_exchange_context(
             octobot_flow.logic.configuration.create_profile_data(
                 self.automation_state.exchange_account_details,
@@ -322,6 +334,15 @@ class AutomationJob:
                 copy_constants.DEFAULT_MISSED_SIGNALS_GRACE_ABORT_THRESHOLD,
             )
             self._logger.info(f"Fetched {len(trading_signals)} copy trading signals")
+            fetched_strategy_ids = {trading_signal.strategy_id for trading_signal in trading_signals}
+            missing_strategy_ids = set(to_fetch_signals) - fetched_strategy_ids
+            if missing_strategy_ids:
+                missing_strategy_ids_list = ", ".join(sorted(missing_strategy_ids))
+                raise octobot_flow.errors.CommunityTradingSignalError(
+                    f"No trading signal available for strategy {missing_strategy_ids_list}. "
+                    "The leader automation must complete at least one iteration with "
+                    "`emit_signals` enabled before copy can run."
+                )
             copy_trading_data = octobot_flow.entities.FetchedCopyTradingData(
                 trading_signals=trading_signals
             )
@@ -393,12 +414,17 @@ class AutomationJob:
         trading_signals_repository = octobot_flow.repositories.community.TradingSignalsRepository.from_community_repository(
             maybe_community_repository
         )
-        await trading_signals_repository.insert_trading_signal(
-            octobot_flow.entities.TradingSignal(
-                strategy_id=automation.metadata.strategy_id, account=account
+        try:
+            await trading_signals_repository.insert_trading_signal(
+                octobot_flow.entities.TradingSignal(
+                    strategy_id=automation.metadata.strategy_id, account=account
+                )
             )
-        )
-        
+        except wallet_backend_errors.WalletNotFoundError as err:
+            self._logger.error(
+                f"Skipping trading signal emission: {err}"
+            )
+            
     def _get_actions_to_execute(self) -> tuple[list[octobot_flow.entities.AbstractActionDetails], bool]:
         if pending_priority_actions := self._get_pending_priority_actions():
             return pending_priority_actions, True

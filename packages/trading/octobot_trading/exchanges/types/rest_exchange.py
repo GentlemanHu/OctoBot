@@ -19,8 +19,6 @@ import decimal
 import typing
 import copy
 import asyncio
-# import traceback      # uncomment for debugging in tests
-# import sys        # uncomment for debugging in tests
 
 import ccxt.async_support as ccxt
 from octobot_commons import logging
@@ -28,13 +26,13 @@ import octobot_commons.enums as commons_enums
 import octobot_commons.tree as commons_tree
 import octobot_commons.constants as commons_constants
 import octobot_commons.html_util as html_util
-import octobot_commons.number_util as number_util
 
 import octobot_trading.enums as enums
 import octobot_trading.constants as constants
 import octobot_trading.errors as errors
 import octobot_trading.exchanges.util as exchanges_util
 import octobot_trading.exchanges.connectors.ccxt.ccxt_connector as ccxt_connector
+import octobot_trading.exchanges.connectors.ccxt.ccxt_client_util as ccxt_client_util
 import octobot_trading.exchanges.connectors.ccxt.enums as ccxt_enums
 from octobot_trading.enums import ExchangeConstantsOrderColumns as ecoc
 import octobot_trading.exchanges.abstract_exchange as abstract_exchange
@@ -72,106 +70,13 @@ class RestExchange(abstract_exchange.AbstractExchange):
                               ecoc.SIDE.value, ecoc.PRICE.value, ecoc.AMOUNT.value, ecoc.STATUS.value]
     ORDER_REQUIRED_FIELDS = ORDER_NON_EMPTY_FIELDS + [ecoc.REMAINING.value]
     PRINT_DEBUG_LOGS = False
-    FIX_MARKET_STATUS = False  # set True when get_fixed_market_status should be called when calling get_market_status
-    # set True when get_fixed_market_status should be remove price limits (when limits are invalid)
-    REMOVE_MARKET_STATUS_PRICE_LIMITS = False
-    # set True when get_fixed_market_status should adapt amounts for contract size
-    # (amounts are in not kept as contract size with OctoBot)
-    ADAPT_MARKET_STATUS_FOR_CONTRACT_SIZE = False
-    # set True when disabled symbols should still be considered (ex: mexc with its temporary api trading disabled symbols)
-    INCLUDE_DISABLED_SYMBOLS_IN_AVAILABLE_SYMBOLS = False
-    # set True when create_market_buy_order_with_cost should be used to create buy market orders
-    # (useful to predict the exact spent amount)
-    ENABLE_SPOT_BUY_MARKET_WITH_COST = False
-    REQUIRE_ORDER_FEES_FROM_TRADES = False  # set True when get_order is not giving fees on closed orders and fees
-    # should be fetched using recent trades.
-    REQUIRE_CLOSED_ORDERS_FROM_RECENT_TRADES = False  # set True when get_closed_orders is not supported
-    ALLOW_TRADES_FROM_CLOSED_ORDERS = False  # set True when get_my_recent_trades should use get_closed_orders
-    DUMP_INCOMPLETE_LAST_CANDLE = False  # set True in tentacle when the exchange can return incomplete last candles
-    # Set True when exchange is not returning empty position details when fetching a position with a specified symbol
-    # Exchange will then fallback to self.get_mocked_empty_position when having get_position returning None
-    REQUIRES_MOCKED_EMPTY_POSITION = False
-    # set True when get_positions() is not returning empty positions and should use get_position() instead
-    REQUIRES_SYMBOL_FOR_EMPTY_POSITION = False
-    SUPPORTS_SET_MARGIN_TYPE = True  # set False when there is no API to switch between cross and isolated margin types
-    # set False when the exchange refuses to change margin type when an associated position is open
-    SUPPORTS_SET_MARGIN_TYPE_ON_OPEN_POSITIONS = True
-    EXPECT_POSSIBLE_ORDER_NOT_FOUND_DURING_ORDER_CREATION = False  # set True when get_order() can return None
-    # (order not found) when orders are being created on exchange and are not fully processed on the exchange side.
-    ALWAYS_REQUIRES_AUTHENTICATION = False  # set True when even normally public apis require authentication
-    # set True when even loading markets can make auth calls when creds are set
-    CAN_MAKE_AUTHENTICATED_REQUESTS_WHEN_LOADING_MARKETS = False
-    HAS_FETCHED_DETAILS = False  # set True when this exchange details (urls etc) have to be fetched before
-    # starting the exchange
-    IS_SKIPPING_EMPTY_CANDLES_IN_OHLCV_FETCH = False    # set True when the exchange is known for not returning any
-    # candle when no traded happened during a candle time frame. In this case, a missing candle in backtesting won't
-    # trigger an error
-    # Name of the price param to give ccxt to edit a stop loss
-    STOP_LOSS_EDIT_PRICE_PARAM = ccxt_enums.ExchangeOrderCCXTUnifiedParams.STOP_LOSS_PRICE.value
-    STOP_LOSS_CREATE_PRICE_PARAM = ccxt_enums.ExchangeOrderCCXTUnifiedParams.STOP_LOSS_PRICE.value
-    WITHDRAW_NETWORK_PARAM_KEY = "network" # key to use in params to specify the network to withdraw to
-    # Mark price params
-    MARK_PRICE_IN_POSITION = False
-    MARK_PRICE_IN_TICKER = False
-
-    # OHLCV params
-    # set when the exchange returns nothing when fetching historical candles with a too early start time
-    # (will iterate historical OHLCV requests over this window)
-    MAX_FETCHED_OHLCV_COUNT = None
-    CREATE_OHLCV_FROM_TICKERS = False # set True when the exchange can't fetch OHLCVs but can fetch tickers
-
-    # Funding rate params
-    FUNDING_WITH_MARK_PRICE = False
-    FUNDING_IN_TICKER = False
-
-    # Set when order cost is not (yet) accurately computed for a given exchange
-    MAX_INCREASED_POSITION_QUANTITY_MULTIPLIER = constants.ONE
-
-    SUPPORT_FETCHING_CANCELLED_ORDERS = True
-    # Set True when get_open_order() can return outdated orders (cancelled or not yet created)
-    CAN_HAVE_DELAYED_OPEN_ORDERS = False
-    # Set True when get_cancelled_order() can return outdated open orders
-    CAN_HAVE_DELAYED_CANCELLED_ORDERS = False
-    # Set True when the "limit" param when fetching order books is taken into account
-    SUPPORTS_CUSTOM_LIMIT_ORDER_BOOK_FETCH = False
-
-    # set True when fetch_tickers can sometimes miss symbols. In this case, the connector will try to fix it
-    CAN_MISS_TICKERS_IN_ALL_TICKERS = True
-
-    # text content of errors due to orders not found errors
-    EXCHANGE_ORDER_NOT_FOUND_ERRORS: typing.List[typing.Iterable[str]] = []
-    # when ccxt is raising ccxt.ExchangeError instead of ccxt.AuthenticationError on api key permissions issue
-    # text content of errors due to api key permissions issues
-    EXCHANGE_PERMISSION_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to account compliancy issues
-    EXCHANGE_COMPLIANCY_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to exchange internal synch (like when portfolio is not yet up to date after a trade)
-    EXCHANGE_INTERNAL_SYNC_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to missing fnuds when creating an order (when not identified as such by ccxt)
-    EXCHANGE_MISSING_FUNDS_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to exchange local account permissions (ex: accounts from X country can't trade XYZ)
-    # text content of errors due to traded assets for account
-    EXCHANGE_ACCOUNT_TRADED_SYMBOL_PERMISSION_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to unhandled authentication issues
-    EXCHANGE_AUTHENTICATION_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to unhandled IP white list issues
-    EXCHANGE_IP_WHITELIST_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to a closed position on the exchange. Relevant for reduce-only orders
-    EXCHANGE_CLOSED_POSITION_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to an order that would immediately trigger if created. Relevant for stop losses
-    EXCHANGE_ORDER_IMMEDIATELY_TRIGGER_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to an order that can't be cancelled on exchange (because filled or already cancelled)
-    EXCHANGE_ORDER_UNCANCELLABLE_ERRORS: typing.List[typing.Iterable[str]] = []
-    # text content of errors due to max open orders being reached
-    EXCHANGE_MAX_ORDERS_FOR_MARKET_REACHED_ERRORS: typing.List[typing.Iterable[str]] = []
-    # set when the exchange can allow users to pay fees in a custom currency (ex: BNB on binance)
-    LOCAL_FEES_CURRENCIES: typing.List[str] = []
 
     # Set False in case this exchange's markets should never be filtered as soon as they are fetched
     # Therefore overriding the env var value for this exchange
     FETCH_MIN_EXCHANGE_MARKETS = constants.FETCH_MIN_EXCHANGE_MARKETS
+    WITHDRAW_NETWORK_PARAM_KEY = "network" # key to use in params to specify the network to withdraw to
+    HAS_FETCHED_DETAILS = False  # set True when this exchange details (urls etc) have to be fetched before starting the exchange
 
-    ADJUST_FOR_TIME_DIFFERENCE = False  # set True when the client needs to adjust its requests for time difference with the server
 
     DEFAULT_CONNECTOR_CLASS = ccxt_connector.CCXTConnector
 
@@ -182,10 +87,10 @@ class RestExchange(abstract_exchange.AbstractExchange):
         super().__init__(config, exchange_manager, exchange_config_by_exchange)
         if self.HAS_FETCHED_DETAILS:
             self._apply_fetched_details(config, exchange_manager)
-        self.connector = self._create_connector(config, exchange_manager, connector_class)
+        self.connector = self._create_connector(config, exchange_manager, connector_class, exchange_config_by_exchange)
         self.pair_contracts: dict[str, contracts.MarginContract] = {}
 
-    def _create_connector(self, config, exchange_manager, connector_class):
+    def _create_connector(self, config, exchange_manager, connector_class, exchange_config_by_exchange):
         to_create_connector_class = connector_class or self.DEFAULT_CONNECTOR_CLASS
         extended_additional_config = to_create_connector_class.get_extended_additional_connector_config(
             self.get_additional_connector_config() or {},
@@ -196,32 +101,60 @@ class RestExchange(abstract_exchange.AbstractExchange):
             adapter_class=self.get_adapter_class(),
             additional_config=extended_additional_config,
             rest_name=self.get_rest_name(self.exchange_manager),
-            force_auth=self.requires_authentication(self.tentacle_config, None, None),
+            force_auth=self.requires_authentication(
+                self.tentacle_config, None, exchange_config_by_exchange, self.exchange_manager
+            ),
         )
 
     @classmethod
     def requires_authentication(
-        cls, 
-        tentacle_config: typing.Optional[dict], 
-        tentacles_setup_config, 
-        exchange_config_by_exchange: typing.Optional[dict[str, dict]]
+        cls,
+        tentacle_config: typing.Optional[dict],
+        tentacles_setup_config,
+        exchange_config_by_exchange: typing.Optional[dict[str, dict]],
+        exchange_manager=None,
+        ccxt_rest_exchange_id: typing.Optional[str] = None,
     ) -> bool:
         if tentacle_config is None:
             tentacle_config = {}
             if exchange_config_by_exchange and (
-                _tencles_config := cls.get_tentacle_config(exchange_config_by_exchange)
+                _tentacles_config := cls.get_tentacle_config(exchange_config_by_exchange)
             ):
                 # copy to avoid editing the original tentacle config in load_user_inputs_from_class
-                tentacle_config = copy.copy(_tencles_config)
+                tentacle_config = copy.copy(_tentacles_config)
             if tentacle_config and tentacles_setup_config is not None:
                 cls.load_user_inputs_from_class(tentacles_setup_config, tentacle_config)
-        return tentacle_config.get(commons_constants.CONFIG_FORCE_AUTHENTICATION, cls.ALWAYS_REQUIRES_AUTHENTICATION)
+        if exchange_manager and exchange_manager.exchange and exchange_manager.exchange.connector:
+            always_requires_authentication = bool(exchange_manager.exchange.connector.get_option_value(
+                enums.ExchangeClientOptions.ALWAYS_REQUIRES_AUTHENTICATION
+            ))
+        else:
+            if exchange_manager is not None:
+                ccxt_rest = cls.get_rest_name(exchange_manager)
+            elif ccxt_rest_exchange_id is not None:
+                ccxt_rest = ccxt_rest_exchange_id
+            else:
+                ccxt_rest = cls.get_connector_id()
+            always_requires_authentication = bool(ccxt_client_util.get_option_value_from_new_ccxt_client(
+                ccxt_rest, enums.ExchangeClientOptions.ALWAYS_REQUIRES_AUTHENTICATION
+            ))
+        return tentacle_config.get(
+            commons_constants.CONFIG_FORCE_AUTHENTICATION, always_requires_authentication
+        )
 
     def requires_authentication_for_this_configuration_only(self) -> bool:
+        always_requires_authentication = bool(self.get_option_value(
+            enums.ExchangeClientOptions.ALWAYS_REQUIRES_AUTHENTICATION,
+        ))
         return (
-            self.requires_authentication(self.tentacle_config, None, None) 
-            and not self.ALWAYS_REQUIRES_AUTHENTICATION
+            self.requires_authentication(
+                self.tentacle_config, None, {}, self.exchange_manager
+            )
+            and not always_requires_authentication
         )
+
+    async def request_exchange_to_ensure_authentication(self):
+        await self.connector.request_exchange_to_ensure_authentication()
 
     async def initialize_impl(self):
         await self.connector.initialize()
@@ -251,6 +184,10 @@ class RestExchange(abstract_exchange.AbstractExchange):
     def get_rest_name(cls, exchange_manager):
         return exchange_manager.exchange_class_string
 
+    @classmethod
+    def get_connector_id(cls) -> str:
+        return cls.get_name()
+
     def get_associated_websocket_exchange_name(self):
         return self.exchange_manager.exchange_name
 
@@ -258,9 +195,33 @@ class RestExchange(abstract_exchange.AbstractExchange):
         # Override in tentacles when using a custom adapter
         return None
 
+    def get_option_value(
+        self, option_key: enums.ExchangeClientOptions
+    ) -> typing.Union[bool, float, int, str, None]:
+        return self.connector.get_option_value(option_key)
+
+    def supports_order_type(
+        self, order_type: enums.TradeOrderType
+    ) -> bool:
+        return self.connector.supports_order_type(order_type)
+
+    def supports_bundled_orders(
+        self, order_type: enums.TradeOrderType
+    ) -> bool:
+        return self.connector.supports_bundled_orders(order_type)
+
     def fetch_stop_order_in_different_request(self, symbol: str) -> bool:
-        # Override in tentacles when stop orders need to be fetched in a separate request from CCXT
-        return False
+        return self.connector.fetch_stop_order_in_different_request(symbol)
+    
+    def supports_all_symbols_listing(self) -> bool:
+        return bool(self.get_option_value(
+            enums.ExchangeClientOptions.SUPPORTS_ALL_SYMBOLS_LISTING
+        ))
+
+    def lazy_load_markets(self) -> bool:
+        return bool(self.get_option_value(
+            enums.ExchangeClientOptions.LAZY_LOAD_MARKETS
+        ))
 
     async def create_order(self, order_type: enums.TraderOrderType, symbol: str, quantity: decimal.Decimal,
                            price: decimal.Decimal = None, stop_price: decimal.Decimal = None,
@@ -296,7 +257,6 @@ class RestExchange(abstract_exchange.AbstractExchange):
             float_current_price = None if current_price is None else float(current_price)
             side = None if side is None else side.value
             params = {} if params is None else params
-            params.update(self.exchange_manager.exchange_backend.get_orders_parameters(None))
             edited_order = await self._edit_order(exchange_order_id, order_type, symbol, quantity=float_quantity,
                                                   price=float_price, stop_price=float_stop_price, side=side,
                                                   current_price=float_current_price, params=params)
@@ -328,6 +288,13 @@ class RestExchange(abstract_exchange.AbstractExchange):
             raise errors.MarketClosedError(f"{symbol} {html_util.get_html_summary_if_relevant(err)}") from err
         except (ccxt.NotSupported, NotImplementedError) as err:
             raise errors.NotSupported(err) from err
+        except ccxt.PermissionDenied as err:
+            # invalid api key or missing trading rights
+            self.connector.set_first_consecutive_authentication_error_at_if_unset()
+            raise errors.AuthenticationError(
+                f"Error when handling order {html_util.get_html_summary_if_relevant(err)}. "
+                f"Please make sure that trading permissions are on for this API key."
+            ) from err
         except (errors.AuthenticationError, ccxt.AuthenticationError) as err:
             # invalid api key or missing trading rights
             self.connector.set_first_consecutive_authentication_error_at_if_unset()
@@ -338,18 +305,26 @@ class RestExchange(abstract_exchange.AbstractExchange):
         except ccxt.DDoSProtection as e:
             # ccxt.DDoSProtection: raised upon rate limit issues,
             # last response data might have details on what is happening
-            # ensure this is not a permission error (can happen on binance)
-            if self.is_api_permission_error(e):
-                # invalid api key or missing trading rights
-                raise errors.AuthenticationError(
-                    f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                    f"Please make sure that trading permissions are on for this API key."
-                ) from e
             if self.should_log_on_ddos_exception(e):
                 self.connector.log_ddos_error(e)
             raise errors.FailedRequest(
                 f"Failed order operation: {e.__class__.__name__} {html_util.get_html_summary_if_relevant(e)}"
             ) from e
+        except ccxt.OBMaxOpenOrdersReached as err:
+            raise errors.ExchangeMaxOrdersForMarketReachedError(
+                f"Error when handling order {html_util.get_html_summary_if_relevant(err)}. "
+                f"Exchange is refusing this order: the maximum number of orders for this market has been reached."
+            ) from err
+        except ccxt.OBClosedPositionError as err:
+            raise errors.ExchangeClosedPositionError(
+                f"Error when handling order {html_util.get_html_summary_if_relevant(err)}. "
+                f"Exchange is refusing this order request because associated position is closed."
+            ) from err
+        except ccxt.OrderImmediatelyFillable as err:
+            raise errors.ExchangeOrderInstantTriggerError(
+                f"Error when handling order {html_util.get_html_summary_if_relevant(err)}. "
+                f"Exchange is refusing this order request because associated order would instantly trigger."
+            ) from err
         except (errors.OctoBotExchangeError, errors.OrderCreationError):
             # custom error: forward it
             raise
@@ -359,35 +334,9 @@ class RestExchange(abstract_exchange.AbstractExchange):
                     f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
                     f"Exchange currently refuses to create orders of type {order_type} on {symbol}."
                 ) from e
-            if self.is_api_permission_error(e):
-                # invalid api key or missing trading rights
-                self.connector.set_first_consecutive_authentication_error_at_if_unset()
-                raise errors.AuthenticationError(
-                    f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                    f"Please make sure that trading permissions are on for this API key."
-                ) from e
-            if self.is_exchange_rules_compliancy_error(e):
-                raise errors.ExchangeCompliancyError(
-                    f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                    f"Exchange is refusing this order request on this account because "
-                    f"of its compliancy requirements."
-                ) from e
-            if self.is_exchange_max_orders_for_market_reached_error(e):
-                raise errors.ExchangeMaxOrdersForMarketReachedError(
-                    f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                    f"Exchange is refusing this order: the maximum number of orders for this market has been reached."
-                ) from e
-            if self.is_exchange_closed_position_error(e):
-                raise errors.ExchangeClosedPositionError(
-                    f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                    f"Exchange is refusing this order request because associated position is closed."
-                ) from e
-            if self.is_exchange_order_would_immediately_trigger_error(e):
-                raise errors.ExchangeOrderInstantTriggerError(
-                    f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                    f"Exchange is refusing this order request because associated order would instantly trigger."
-                ) from e
             self.log_order_creation_error(e, order_type, symbol, quantity, price, stop_price)
+            # import traceback      # uncomment for debugging in tests
+            # import sys        # uncomment for debugging in tests
             # print(traceback.format_exc(), file=sys.stderr)    # uncomment for debugging in tests
             self.logger.exception(
                 e,
@@ -406,8 +355,11 @@ class RestExchange(abstract_exchange.AbstractExchange):
                     )
                     return None
                 exchange_order_id = created_order[ecoc.EXCHANGE_ID.value]
-                params = self.order_request_kwargs_factory(
-                    exchange_order_id, order_type, **(get_order_params or {})
+                params = self.add_stop_param_if_necessary(
+                    exchange_order_id,
+                    self.get_option_value(enums.ExchangeClientOptions.REQUIRES_STOP_PARAM_TO_FETCH_ORDER),
+                    order_type,
+                    **(get_order_params or {})
                 )
                 fetched_order = await self.get_order(
                     exchange_order_id, symbol=symbol, **params
@@ -443,14 +395,24 @@ class RestExchange(abstract_exchange.AbstractExchange):
                                                      current_price=current_price,
                                                      reduce_only=reduce_only, params=params)
         except ccxt.PermissionDenied as err:
-            if self.is_exchange_account_traded_symbol_permission_error(err):
-                # exchange won't let this order create: raise
-                raise errors.ExchangeAccountSymbolPermissionError(
-                    f"Error when creating {symbol} {order_type} order on "
-                    f"{self.exchange_manager.exchange_name}: {html_util.get_html_summary_if_relevant(err)}"
-                ) from err
-            # otherwise propagate exception: this is not a situation to retry
-            raise
+            # exchange won't let this order create: raise
+            raise errors.ExchangeAccountSymbolPermissionError(
+                f"Error when creating {symbol} {order_type} order on "
+                f"{self.exchange_manager.exchange_name}: {html_util.get_html_summary_if_relevant(err)}"
+            ) from err
+        except ccxt.OBUntradableSymbol as err:
+            raise errors.UntradableSymbolError(
+                f"Error when creating {symbol} {order_type} order on "
+                f"{self.exchange_manager.exchange_name}: {html_util.get_html_summary_if_relevant(err)}"
+            ) from err
+        except ccxt.OBInternalSyncError as err:
+            raise errors.ExchangeInternalSyncError(
+                f"Error when handling {symbol} {order_type} order. "
+                f"Exchange is refusing this order request because of sync error "
+                f"({html_util.get_html_summary_if_relevant(err)})."
+            ) from err
+        except ccxt.InsufficientFunds as err:
+            self._on_missing_funds_err(err, order_type, symbol, quantity, price, stop_price)
         except ccxt.ExchangeNotAvailable as err:
             if not self._enable_create_order_retrier:
                 # should not retry, raise
@@ -471,20 +433,6 @@ class RestExchange(abstract_exchange.AbstractExchange):
             # not retriable, raise
             raise
         except (ccxt.InvalidOrder, ccxt.BadRequest) as err:
-            if self.is_exchange_account_traded_symbol_permission_error(err):
-                # exchange won't let this order create: raise
-                raise errors.ExchangeAccountSymbolPermissionError(
-                    f"Error when creating {symbol} {order_type} order on {self.exchange_manager.exchange_name}: "
-                    f"{html_util.get_html_summary_if_relevant(err)}"
-                ) from err
-            if self.is_exchange_internal_sync_error(err):
-                raise errors.ExchangeInternalSyncError(
-                    f"Error when handling {symbol} {order_type} order. "
-                    f"Exchange is refusing this order request because of sync error "
-                    f"({html_util.get_html_summary_if_relevant(err)})."
-                ) from err
-            if self.is_missing_funds_error(err):
-                self._on_missing_funds_err(err, order_type, symbol, quantity, price, stop_price)
             if not self._enable_create_order_retrier:
                 # should not retry, raise
                 raise
@@ -522,7 +470,6 @@ class RestExchange(abstract_exchange.AbstractExchange):
         float_current_price = current_price if current_price is None else float(current_price)
         side = None if side is None else side.value
         params = {} if params is None else params
-        params.update(self.exchange_manager.exchange_backend.get_orders_parameters(None))
         if order_type == enums.TraderOrderType.BUY_MARKET:
             created_order = await self._create_market_buy_order(symbol, float_quantity, price=float_price,
                                                                 reduce_only=reduce_only, params=params)
@@ -559,11 +506,15 @@ class RestExchange(abstract_exchange.AbstractExchange):
     async def _create_market_buy_order(
         self, symbol, quantity, price=None, reduce_only: bool = False, params=None
         ) -> dict:
-        if self.ENABLE_SPOT_BUY_MARKET_WITH_COST and self.exchange_manager.is_spot_only:
+        enable_spot_buy_market_with_cost = bool(
+            self.get_option_value(enums.ExchangeClientOptions.ENABLE_SPOT_BUY_MARKET_WITH_COST)
+        )
+        if enable_spot_buy_market_with_cost and self.exchange_manager.is_spot_only:
             if price is None:
                 raise errors.NotSupported(
-                    f"price is required for buy market orders when {self.get_name()}.ENABLE_SPOT_BUY_MARKET_WITH_COST "
-                    f"is {self.ENABLE_SPOT_BUY_MARKET_WITH_COST}"
+                    f"price is required for buy market orders when "
+                    f"{enums.ExchangeClientOptions.ENABLE_SPOT_BUY_MARKET_WITH_COST.value} "
+                    f"is {enable_spot_buy_market_with_cost}"
                 )
             return await self.connector.create_market_buy_order_with_cost(
                 symbol, quantity * price, quantity, params=params
@@ -623,81 +574,78 @@ class RestExchange(abstract_exchange.AbstractExchange):
     def get_first_consecutive_authentication_error_at(self) -> typing.Optional[float]:
         return self.connector.first_consecutive_authentication_error_at
 
-    def _should_fix_market_status(self):
-        return self.FIX_MARKET_STATUS
+    async def load_markets_for_symbols(self, symbols: list[str]) -> list[dict]:
+        loaded_markets = await self.connector.load_markets_for_symbols(symbols)
+        # ensure symbols are updated
+        self.symbols.update(
+            self.get_all_available_symbols(active_only=True)
+        )
+        return loaded_markets
 
-    def _should_remove_market_status_limits(self):
-        return self.REMOVE_MARKET_STATUS_PRICE_LIMITS
+    def _is_lazy_market_loaded(self, symbol: str) -> bool:
+        client_markets = self.connector.client.markets or {}
+        return symbol in client_markets
 
-    def _should_adapt_market_status_for_contract_size(self):
-        return self.ADAPT_MARKET_STATUS_FOR_CONTRACT_SIZE
+    async def ensure_lazy_market_loaded(self, symbol: str) -> None:
+        if not self.lazy_load_markets():
+            return
+        if self._is_lazy_market_loaded(symbol):
+            return
+        await self.load_markets_for_symbols([symbol])
+
+    async def get_market_status_including_lazy_load(self, symbol, price_example=None, with_fixer=True):
+        await self.ensure_lazy_market_loaded(symbol)
+        return self.get_market_status(symbol, price_example=price_example, with_fixer=with_fixer)
 
     def get_market_status(self, symbol, price_example=None, with_fixer=True):
         """
         Override using get_fixed_market_status in exchange tentacle if the default market status is not as expected
         """
-        if self._should_fix_market_status():
-            return self.get_fixed_market_status(
-                symbol,
-                price_example=price_example,
-                with_fixer=with_fixer,
-                remove_price_limits=self._should_remove_market_status_limits(),
-                adapt_for_contract_size=self._should_adapt_market_status_for_contract_size()
-            )
         return self.connector.get_market_status(symbol, price_example=price_example, with_fixer=with_fixer)
 
-    def get_fixed_market_status(self, symbol, price_example=None, with_fixer=True, remove_price_limits=False,
-                                adapt_for_contract_size=False):
-        """
-        Use this method in local get_market_status overrides when market status has to be fixed by
-        calling _fix_market_status.
-        Changes PRECISION_AMOUNT and PRECISION_PRICE from decimals to integers
-        (use number of digits instead of price example) by default.
-        Override _fix_market_status to change other elements
-        """
-        market_status = self.connector.adapter.adapt_market_status(
-            copy.deepcopy(
-                self.connector.get_market_status(symbol, with_fixer=False)
-            ),
-            remove_price_limits=remove_price_limits
-        )
-        if adapt_for_contract_size and self.exchange_manager.is_future:
-            self._adapt_market_status_for_contract_size(market_status, self.get_contract_size(symbol))
-        if with_fixer:
-            return exchanges_util.ExchangeMarketStatusFixer(market_status, price_example).market_status
-        return market_status
+    async def get_dex_pairs(self, symbols: list[str], **kwargs: dict) -> list[dict]:
+        return await self.connector.get_dex_pairs(symbols, **kwargs)
 
-    def get_max_orders_count(self, symbol: str, order_type: enums.TraderOrderType) -> int:
-        return (
-            constants.DEFAULT_MAX_STOP_ORDERS_COUNT if orders.is_stop_order(order_type)
-            else constants.DEFAULT_MAX_DEFAULT_ORDERS_COUNT
-        )
-
-    def uses_demo_trading_instead_of_sandbox(self) -> bool:
-        return False
+    def uses_demo_trading_instead_of_sandbox(self, exchange_type: enums.ExchangeTypes) -> bool:
+        return self.connector.uses_demo_trading_instead_of_sandbox(exchange_type)
 
     def _apply_contract_size(self, value, contract_size):
         if value is None:
             return value
         return value * contract_size
 
-    def _adapt_market_status_for_contract_size(self, market_status, contract_size):
-        float_size = float(contract_size)
-        for limit_type in (enums.ExchangeConstantsMarketStatusColumns.LIMITS_AMOUNT.value, ):
-            for limit_val in (enums.ExchangeConstantsMarketStatusColumns.LIMITS_AMOUNT_MIN.value,
-                              enums.ExchangeConstantsMarketStatusColumns.LIMITS_AMOUNT_MAX.value):
-
-                market_status[enums.ExchangeConstantsMarketStatusColumns.LIMITS.value][limit_type][limit_val] = \
-                    self._apply_contract_size(
-                        market_status[enums.ExchangeConstantsMarketStatusColumns.LIMITS.value][limit_type][limit_val],
-                        float_size
-                    )
-        market_status[enums.ExchangeConstantsMarketStatusColumns.PRECISION.value][
-            enums.ExchangeConstantsMarketStatusColumns.PRECISION_AMOUNT.value] = \
-            number_util.get_digits_count(float_size)
-
     async def get_account_id(self, **kwargs: dict) -> str:
-        raise NotImplementedError(f"get_account_id is not implemented on {self.exchange_manager.exchange_name}")
+        return await self.connector.get_account_id(**kwargs)
+    
+    async def get_permissions(self, **kwargs: dict) -> list[enums.APIKeyRights]:
+        return await self.connector.get_permissions(**kwargs)
+
+    async def ensure_api_key_permissions(self, **kwargs: dict) -> None:
+        try:
+            permissions = await self.get_permissions(**kwargs)
+        except errors.NotSupported:
+            return # not supported, skip permission check
+        if not permissions:
+            raise errors.InvalidAPIKeyPermissionsError("No permissions found")
+        if enums.APIKeyRights.READING not in permissions:
+            raise errors.InvalidAPIKeyPermissionsError("READING permission is required")
+        if enums.APIKeyRights.SPOT_TRADING not in permissions and self.exchange_manager.is_spot_only:
+            raise errors.InvalidAPIKeyPermissionsError("SPOT_TRADING permission is required")
+        if enums.APIKeyRights.FUTURES_TRADING not in permissions and self.exchange_manager.is_future:
+            raise errors.InvalidAPIKeyPermissionsError("FUTURES_TRADING permission is required")
+        if enums.APIKeyRights.WITHDRAWALS in permissions and not constants.ALLOW_FUNDS_TRANSFER:
+            raise errors.InvalidAPIKeyPermissionsError(
+                "WITHDRAWALS permission found, but funds transfer is disabled. Please remove the permission or enable funds transfer."
+            )
+
+    def get_orders_broker_parameters(self, **kwargs: dict) -> dict:
+        return self.connector.get_orders_broker_parameters(**kwargs)
+
+    def get_max_open_orders_count(self, symbol: str, order_type: enums.TradeOrderType, **kwargs: dict) -> int:
+        return self.connector.get_max_open_orders_count(symbol=symbol, order_type=order_type, **kwargs)
+
+    def is_authenticated_request(self, url: str, method: str, headers: dict, body) -> bool:
+        return self.connector.is_authenticated_request(url=url, method=method, headers=headers, body=body)
 
     def supports_fetching_balance(self) -> bool:
         return self.connector.supports_fetching_balance()
@@ -714,8 +662,6 @@ class RestExchange(abstract_exchange.AbstractExchange):
 
     async def get_kline_price(self, symbol: str, time_frame: commons_enums.TimeFrames,
                               **kwargs: dict) -> typing.Optional[list]:
-        if self.DUMP_INCOMPLETE_LAST_CANDLE:
-            raise errors.NotSupported(f"Can't fetch kline when the last candle from exchange can't be fetched")
         return await self.connector.get_kline_price(symbol=symbol, time_frame=time_frame, **kwargs)
 
     async def get_order_book(self, symbol: str, limit: int = 5, **kwargs: dict) -> typing.Optional[dict]:
@@ -732,22 +678,52 @@ class RestExchange(abstract_exchange.AbstractExchange):
     async def get_price_ticker(self, symbol: str, **kwargs: dict) -> typing.Optional[dict]:
         return await self.connector.get_price_ticker(symbol=symbol, **kwargs)
 
-    async def get_all_currencies_price_ticker(self, **kwargs: dict) -> typing.Optional[dict[str, dict]]:
-        return await self.connector.get_all_currencies_price_ticker(**kwargs)
+    async def get_all_currencies_price_ticker(self, symbols: typing.Optional[list[str]] = None, **kwargs: dict) -> typing.Optional[dict[str, dict]]:
+        return await self.connector.get_all_currencies_price_ticker(symbols=symbols, **kwargs)
 
     async def refresh_markets(self):
         return await self.connector.load_symbol_markets(
             reload=True, market_filter=self.exchange_manager.market_filter
         )
 
-    def order_request_kwargs_factory(
-        self, 
-        exchange_order_id: str, 
-        order_type: typing.Optional[enums.TraderOrderType] = None, 
+    def add_stop_param_if_necessary(
+        self,
+        exchange_order_id: str,
+        require_stop_param_when_relevant: bool,
+        order_type: typing.Optional[enums.TraderOrderType] = None,
         **kwargs
     ) -> dict:
-        # implement if the exchange needs additional kwargs to fetch an order, like to fetch stop orders
-        return kwargs
+        if not require_stop_param_when_relevant:
+            return kwargs
+        params = kwargs or {}
+        try:
+            if ccxt_enums.OrderFetchParams.STOP.value not in params:
+                order_type = (
+                    order_type or 
+                    self.exchange_manager.exchange_personal_data.orders_manager.get_order(
+                        None, exchange_order_id=exchange_order_id
+                    ).order_type
+                )
+                params[ccxt_enums.OrderFetchParams.STOP.value] = (
+                    orders.is_stop_order(order_type)
+                    or orders.is_take_profit_order(order_type)
+                )
+        except KeyError as err:
+            self.logger.warning(
+                f"Order {exchange_order_id} not found in order manager: considering it a regular (no stop/take profit) order {err}"
+            )
+        return params
+
+    def get_order_additional_params(self, order: "orders.Order") -> dict:
+        """
+        Returns a dict with exchange specific additional parameters to set before sending the order
+        :param order: the order instance wrapping orders details
+        :return: the params dict
+        """
+        params = {}
+        if self.exchange_manager.is_future:
+            params[ccxt_enums.ExchangeOrderCCXTColumns.REDUCE_ONLY.value] = order.reduce_only
+        return {}
 
     async def get_order(
         self,
@@ -756,7 +732,12 @@ class RestExchange(abstract_exchange.AbstractExchange):
         order_type: typing.Optional[enums.TraderOrderType] = None,
         **kwargs: dict
     ) -> dict:
-        extended_kwargs = self.order_request_kwargs_factory(exchange_order_id, order_type, **(kwargs or {}))
+        extended_kwargs = self.add_stop_param_if_necessary(
+            exchange_order_id,
+            self.get_option_value(enums.ExchangeClientOptions.REQUIRES_STOP_PARAM_TO_FETCH_ORDER),
+            order_type,
+            **(kwargs or {})
+        )
         return await self._ensure_order_completeness(
             await self.connector.get_order(exchange_order_id, symbol=symbol, **extended_kwargs),
             symbol, **kwargs
@@ -796,7 +777,9 @@ class RestExchange(abstract_exchange.AbstractExchange):
         try:
             return await self._get_closed_orders(symbol=symbol, since=since, limit=limit, **kwargs)
         except errors.NotSupported:
-            if self.REQUIRE_CLOSED_ORDERS_FROM_RECENT_TRADES:
+            if self.get_option_value(enums.ExchangeClientOptions.REQUIRE_CLOSED_ORDERS_FROM_RECENT_TRADES):
+                if self.get_option_value(enums.ExchangeClientOptions.REQUIRE_RECENT_TRADES_FROM_CLOSED_ORDERS):
+                    raise errors.NotSupported("REQUIRE_RECENT_TRADES_FROM_CLOSED_ORDERS and REQUIRE_CLOSED_ORDERS_FROM_RECENT_TRADES are incompatible")
                 return await self._get_closed_orders_from_my_recent_trades(
                     symbol=symbol, since=since, limit=limit, **kwargs
                 )
@@ -806,7 +789,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
     async def get_cancelled_orders(
         self, symbol: str = None, since: int = None, limit: int = None, **kwargs: dict
     ) -> list:
-        if not self.SUPPORT_FETCHING_CANCELLED_ORDERS:
+        if not self.get_option_value(enums.ExchangeClientOptions.SUPPORT_FETCHING_CANCELLED_ORDERS):
             raise errors.NotSupported(f"get_cancelled_orders is not supported")
         return await self.connector.get_cancelled_orders(symbol=symbol, since=since, limit=limit, **kwargs)
 
@@ -822,7 +805,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
     async def ensure_orders_completeness(
         self, raw_orders, symbol, since=None, limit=None, trades_by_exchange_order_id=None, **kwargs
     ):
-        if not self.REQUIRE_ORDER_FEES_FROM_TRADES \
+        if not self.get_option_value(enums.ExchangeClientOptions.REQUIRE_ORDER_FEES_FROM_TRADES) \
                 or not any(exchanges_util.is_missing_trading_fees(order) for order in raw_orders):
             return raw_orders
         trades_by_exchange_order_id = trades_by_exchange_order_id or await self._get_trades_by_exchange_order_id(
@@ -840,7 +823,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
     ):
         if (
             raw_order is None
-            or not self.REQUIRE_ORDER_FEES_FROM_TRADES
+            or not self.get_option_value(enums.ExchangeClientOptions.REQUIRE_ORDER_FEES_FROM_TRADES)
             or not exchanges_util.is_missing_trading_fees(raw_order)
         ):
             return raw_order
@@ -864,6 +847,12 @@ class RestExchange(abstract_exchange.AbstractExchange):
         return trades_by_exchange_order_id
 
     async def get_my_recent_trades(self, symbol: str = None, since: int = None, limit: int = None, **kwargs: dict) -> list:
+        if self.get_option_value(enums.ExchangeClientOptions.REQUIRE_RECENT_TRADES_FROM_CLOSED_ORDERS):
+            if self.get_option_value(enums.ExchangeClientOptions.REQUIRE_CLOSED_ORDERS_FROM_RECENT_TRADES):
+                raise errors.NotSupported("REQUIRE_RECENT_TRADES_FROM_CLOSED_ORDERS and REQUIRE_CLOSED_ORDERS_FROM_RECENT_TRADES are incompatible")
+            return await self.get_closed_orders(
+                symbol=symbol, since=since, limit=limit, **kwargs
+            )
         return await self.connector.get_my_recent_trades(symbol=symbol, since=since, limit=limit, **kwargs)
 
     async def get_user_recent_trades(self, user_id: str, symbol: str = None, since: int = None, limit: int = None, **kwargs: dict) -> list:
@@ -875,7 +864,12 @@ class RestExchange(abstract_exchange.AbstractExchange):
     async def cancel_order(
         self, exchange_order_id: str, symbol: str, order_type: enums.TraderOrderType, **kwargs: dict
     ) -> enums.OrderStatus:
-        extended_kwargs = self.order_request_kwargs_factory(exchange_order_id, order_type, **(kwargs or {}))
+        extended_kwargs = self.add_stop_param_if_necessary(
+            exchange_order_id,
+            self.get_option_value(enums.ExchangeClientOptions.REQUIRES_STOP_PARAM_TO_CANCEL_ORDER),
+            order_type,
+            **(kwargs or {})
+        )
         return await self.connector.cancel_order(exchange_order_id, symbol, order_type, **extended_kwargs)
 
     def get_trade_fee(self, symbol: str, order_type: enums.TraderOrderType, quantity, price, taker_or_maker) -> dict:
@@ -884,8 +878,8 @@ class RestExchange(abstract_exchange.AbstractExchange):
     def get_fees(self, symbol):
         return self.connector.get_fees(symbol)
 
-    def get_pair_from_exchange(self, pair) -> str:
-        return self.connector.get_pair_from_exchange(pair)
+    def get_pair_from_exchange(self, pair, error_on_missing=True) -> str:
+        return self.connector.get_pair_from_exchange(pair, error_on_missing=error_on_missing)
 
     def get_split_pair_from_exchange(self, pair) -> (str, str):
         return self.connector.get_split_pair_from_exchange(pair)
@@ -907,7 +901,9 @@ class RestExchange(abstract_exchange.AbstractExchange):
         :return: the list of all symbols supported by the exchange
         """
         return self.connector.get_client_symbols(
-            active_only=False if self.INCLUDE_DISABLED_SYMBOLS_IN_AVAILABLE_SYMBOLS else active_only
+            active_only=False if self.get_option_value(
+                enums.ExchangeClientOptions.INCLUDE_DISABLED_SYMBOLS_IN_AVAILABLE_SYMBOLS
+            ) else active_only
         )
 
     async def get_all_tradable_symbols(self, active_only=True) -> set[str]:
@@ -928,9 +924,6 @@ class RestExchange(abstract_exchange.AbstractExchange):
 
     def is_successfully_authenticated(self) -> bool:
         return self.connector.is_authenticated
-
-    def is_authenticated_request(self, url: str, method: str, headers: dict, body) -> bool:
-        raise NotImplementedError("is_authenticated_request is not implemented")
 
     async def withdraw(
         self, asset: str, amount: decimal.Decimal, network: str, address: str, tag: str = "", params: dict = None
@@ -1083,7 +1076,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
         :return: the user symbol position
         """
         position = await self.connector.get_position(symbol=symbol, **kwargs)
-        if position is None and self.REQUIRES_MOCKED_EMPTY_POSITION:
+        if position is None and self.get_option_value(enums.ExchangeClientOptions.REQUIRES_MOCKED_EMPTY_POSITION):
             # this exchange does not support empty position fetching, create an empty position from available data
             return await self.get_mocked_empty_position(symbol, **kwargs)
         return position
@@ -1093,7 +1086,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
         Get the current user position list
         :return: the user position list
         """
-        if not self.REQUIRES_SYMBOL_FOR_EMPTY_POSITION:
+        if not self.get_option_value(enums.ExchangeClientOptions.REQUIRES_SYMBOL_FOR_EMPTY_POSITION):
             return await self.connector.get_positions(symbols=symbols, **kwargs)
         if symbols is None:
             raise NotImplementedError(f"The symbols param is required to get multiple positions at once")
@@ -1134,7 +1127,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
     async def get_mocked_empty_position(self, symbol: str, **kwargs: dict) -> dict:
         """
         Override when necessary
-        Called when self.REQUIRES_MOCKED_EMPTY_POSITION is True and a fetched position is None
+        Called when requiresMockedEmptyPosition is True and a fetched position is None
         :param symbol: the position symbol
         """
         return await self.connector.get_mocked_empty_position(symbol=symbol, **kwargs)
@@ -1236,17 +1229,15 @@ class RestExchange(abstract_exchange.AbstractExchange):
         :param isolated: when False, margin type is cross, else it's isolated
         :return: the update result
         """
-        if self.SUPPORTS_SET_MARGIN_TYPE:
+        if self.get_option_value(enums.ExchangeClientOptions.SUPPORTS_SET_MARGIN_TYPE):
             try:
                 return await self.connector.set_symbol_margin_type(symbol=symbol, isolated=isolated, **kwargs)
-            except Exception as e:
-                if self.is_api_permission_error(e):
-                    # invalid api key or missing trading rights
-                    raise errors.AuthenticationError(
-                        f"Error when handling order {html_util.get_html_summary_if_relevant(e)}. "
-                        f"Please make sure that trading permissions are on for this API key."
-                    ) from e
-                raise
+            except ccxt.PermissionDenied as err:
+                # invalid api key or missing trading rights
+                raise errors.AuthenticationError(
+                    f"Error when handling order {html_util.get_html_summary_if_relevant(err)}. "
+                    f"Please make sure that trading permissions are on for this API key."
+                ) from err
         raise errors.NotSupported(f"set_symbol_margin_type is not supported on {self.get_name()}")
 
     async def set_symbol_position_mode(self, symbol: str, one_way: bool):
@@ -1265,10 +1256,6 @@ class RestExchange(abstract_exchange.AbstractExchange):
 
     def supports_trading_type(self, symbol, trading_type: enums.ContractTradingTypes):
         return self.connector.supports_trading_type(symbol, trading_type)
-
-    def supports_native_edit_order(self, order_type: enums.TraderOrderType) -> bool:
-        # return False when default edit_order can't be used and order should always be canceled and recreated instead
-        return True
 
     def is_linear_symbol(self, symbol) -> bool:
         """
@@ -1292,67 +1279,7 @@ class RestExchange(abstract_exchange.AbstractExchange):
         return self.connector.is_expirable_symbol(symbol)
 
     def is_skipping_empty_candles_in_ohlcv_fetch(self):
-        return self.IS_SKIPPING_EMPTY_CANDLES_IN_OHLCV_FETCH
-
-    def is_order_not_found_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_ORDER_NOT_FOUND_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_ORDER_NOT_FOUND_ERRORS)
-        return False
-
-    def is_api_permission_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_PERMISSION_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_PERMISSION_ERRORS)
-        return False
-
-    def is_exchange_rules_compliancy_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_COMPLIANCY_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_COMPLIANCY_ERRORS)
-        return False
-
-    def is_exchange_closed_position_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_CLOSED_POSITION_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_CLOSED_POSITION_ERRORS)
-        return False
-
-    def is_exchange_order_would_immediately_trigger_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_ORDER_IMMEDIATELY_TRIGGER_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_ORDER_IMMEDIATELY_TRIGGER_ERRORS)
-        return False
-
-    def is_exchange_order_uncancellable(self, error: BaseException) -> bool:
-        if self.EXCHANGE_ORDER_UNCANCELLABLE_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_ORDER_UNCANCELLABLE_ERRORS)
-        return False
-
-    def is_exchange_max_orders_for_market_reached_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_MAX_ORDERS_FOR_MARKET_REACHED_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_MAX_ORDERS_FOR_MARKET_REACHED_ERRORS)
-        return False
-
-    def is_exchange_internal_sync_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_INTERNAL_SYNC_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_INTERNAL_SYNC_ERRORS)
-        return False
-
-    def is_missing_funds_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_MISSING_FUNDS_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_MISSING_FUNDS_ERRORS)
-        return False
-
-    def is_exchange_account_traded_symbol_permission_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_ACCOUNT_TRADED_SYMBOL_PERMISSION_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_ACCOUNT_TRADED_SYMBOL_PERMISSION_ERRORS)
-        return False
-
-    def is_authentication_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_AUTHENTICATION_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_AUTHENTICATION_ERRORS)
-        return False
-
-    def is_ip_whitelist_error(self, error: BaseException) -> bool:
-        if self.EXCHANGE_IP_WHITELIST_ERRORS:
-            return exchanges_util.is_error_on_this_type(error, self.EXCHANGE_IP_WHITELIST_ERRORS)
-        return False
+        return bool(self.get_option_value(enums.ExchangeClientOptions.IS_SKIPPING_EMPTY_CANDLES_IN_OHLCV_FETCH))
 
     """
     Auto fetched and filled exchanges

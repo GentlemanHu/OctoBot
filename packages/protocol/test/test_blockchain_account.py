@@ -35,14 +35,16 @@ class TestBlockchainAccount(unittest.TestCase):
         model = BlockchainAccount()
         if include_optional:
             return BlockchainAccount(
+                account_type = 'generic',
                 blockchain = '',
                 network = '',
-                public_key = '',
-                private_key = '',
-                passphrase = ''
+                exchange_config_ids = [
+                    ''
+                    ]
             )
         else:
             return BlockchainAccount(
+                account_type = 'generic',
                 blockchain = '',
         )
         """

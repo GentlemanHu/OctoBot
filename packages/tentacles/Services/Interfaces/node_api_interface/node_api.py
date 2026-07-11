@@ -13,7 +13,6 @@
 #
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
-import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -24,12 +23,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
 import octobot.community.authentication as community_auth
-import octobot_commons.user_root_folder_provider as user_root_folder_provider
 import octobot_services.interfaces as services_interfaces
 import octobot_node.config as node_config
 import octobot_node.scheduler as scheduler # noqa: F401
 import octobot_sync.server as sync_server
-from starfish_server.storage.filesystem import FilesystemObjectStore, FilesystemStorageOptions
 
 
 # Service_bases is only needed at runtime, not for build
@@ -47,6 +44,8 @@ except ImportError:
     build_api_router = _api_main.build_api_router
 
 LOCALHOST_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+OCTOBOT_CLOUD_ORIGIN_REGEX = r"^https://([a-z0-9-]+\.)*octobot\.cloud$"
+ALLOWED_ORIGIN_REGEX = f"({LOCALHOST_ORIGIN_REGEX}|{OCTOBOT_CLOUD_ORIGIN_REGEX})"
 
 
 def custom_generate_unique_id(route: APIRoute) -> str:
@@ -95,18 +94,16 @@ class NodeApiInterface(services_interfaces.AbstractInterface):
             scheduler.initialize_scheduler()
         host = self.host
         port = self.port
-        community_auth.CommunityAuthentication.instance()
-        sync_encryption_secret = sync_server.get_or_generate_encryption_secret(
-            self.get_bot_api().get_edited_config(dict_only=False)
-        )
-        self.app = self.create_app(sync_encryption_secret=sync_encryption_secret)
+        self.app = self.create_app()
         # Set CORS from service config
         cors_origins_str = self.node_api_service.get_backend_cors_origins()
         cors_origins = [i.strip() for i in cors_origins_str.split(",") if i.strip()] if cors_origins_str else []
+        extra_regex = self.node_api_service.get_backend_cors_origin_regex()
+        origin_regex = f"({ALLOWED_ORIGIN_REGEX}|{extra_regex})" if extra_regex else ALLOWED_ORIGIN_REGEX
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
-            allow_origin_regex=LOCALHOST_ORIGIN_REGEX,
+            allow_origin_regex=origin_regex,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -121,7 +118,7 @@ class NodeApiInterface(services_interfaces.AbstractInterface):
             self.server.should_exit = True
 
     @classmethod
-    def create_app(cls, sync_encryption_secret: str | None = None) -> FastAPI:
+    def create_app(cls) -> FastAPI:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             yield
@@ -137,24 +134,19 @@ class NodeApiInterface(services_interfaces.AbstractInterface):
 
         app.include_router(build_api_router(), prefix="/api/v1")
 
-        _sync_data_dir = os.path.join(user_root_folder_provider.get_user_root_folder(), "sync", "data")
-        _fs_store = FilesystemObjectStore(FilesystemStorageOptions(base_dir=_sync_data_dir))
-
-        async def _get_data(key: str) -> str | None:
-            return await _fs_store.get_string(key)
-
-        async def _put_data(key: str, body: str) -> None:
-            await _fs_store.put(key, body, content_type="application/json")
-
-        sync_server.set_data_callbacks(_get_data, _put_data)
+        sync_server.set_data_callbacks(sync_server.get_data, sync_server.put_data)
         app.mount(
             "/sync",
             sync_server.build_default_sync_app(
-                is_allowed=lambda address: any(
-                    w.address.lower() == address
-                    for w in community_auth.CommunityAuthentication.instance().list_wallets()
+                # Service-level allowlist: only the node's own wallets may use the
+                # sync server. Under cap-certs the request identity is the Starfish
+                # user_id, so derive each local wallet's user_id with the same
+                # bootstrap challenge the client uses (cap scoping then confines
+                # each caller to its own users/{user_id}/* paths).
+                is_allowed_user_id=lambda user_id: any(
+                    sync_server.derive_user_id(w.private_key) == user_id
+                    for w in community_auth.CommunityAuthentication.instance().list_wallet_entries()
                 ),
-                encryption_secret=sync_encryption_secret,
             ),
         )
 

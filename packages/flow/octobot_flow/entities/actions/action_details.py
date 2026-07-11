@@ -9,6 +9,7 @@ import octobot_commons.logging
 import octobot_flow.enums
 import octobot_flow.errors
 
+
 @dataclasses.dataclass
 class ActionDependency(octobot_commons.dataclasses.FlexibleDataclass):
     # id of the action this dependency is on
@@ -29,6 +30,8 @@ class AbstractActionDetails(octobot_commons.dataclasses.FlexibleDataclass):
     ] = dataclasses.field(default=None, repr=octobot_commons.constants.ALLOW_PRIVATE_DATA_LOGS)
     # error status of the action. Set after the action is executed, in case an error occured
     error_status: typing.Optional[str] = dataclasses.field(default=None, repr=True)       # ActionErrorStatus
+    # error message of the action. Set after the action is executed, in case an error occured.
+    error_message: typing.Optional[str] = dataclasses.field(default=None, repr=True)
     # time at which the action was executed
     executed_at: typing.Optional[float] = dataclasses.field(default=None, repr=True)
     # dependencies of this action. If an action has dependencies, it will not be executed until all its dependencies are completed
@@ -50,12 +53,15 @@ class AbstractActionDetails(octobot_commons.dataclasses.FlexibleDataclass):
         self,
         result: typing.Optional[dict] = None,
         error_status: typing.Optional[str] = None,
+        error_message: typing.Optional[str] = None,
     ):
         self.executed_at = time.time()
         if result:
             self.result = result
         if error_status:
             self.error_status = error_status
+        if error_message:
+            self.error_message = error_message
 
     def is_completed(self) -> bool:
         return self.executed_at is not None
@@ -64,6 +70,7 @@ class AbstractActionDetails(octobot_commons.dataclasses.FlexibleDataclass):
         self.result = action.result
         self.executed_at = action.executed_at
         self.error_status = action.error_status
+        self.error_message = action.error_message
 
     def should_be_historised_in_database(self) -> bool:
         return False
@@ -74,9 +81,13 @@ class AbstractActionDetails(octobot_commons.dataclasses.FlexibleDataclass):
         parameter: typing.Optional[str] = None,
         result_path: typing.Optional[list[str]] = None,
     ):
+        if action_id == self.id:
+            raise octobot_flow.errors.ActionDependencyError(
+                f"Action {self.id} cannot depend on itself. Dependency parameter: {parameter}, result path: {result_path}"
+            )
         self.dependencies.append(ActionDependency(action_id, parameter, result_path))
 
-    def get_summary(self, minimal: bool = False) -> str:
+    def get_summary(self, minimal: bool = not octobot_commons.constants.ALLOW_PRIVATE_DATA_LOGS) -> str:
         raise NotImplementedError("get_summary is not implemented for this bot action type")
 
     def get_rescheduled_parameters(self) -> dict:
@@ -94,7 +105,11 @@ class AbstractActionDetails(octobot_commons.dataclasses.FlexibleDataclass):
         self.previous_execution_result = self.result # type: ignore
         self.result = None
         self.error_status = None
+        self.error_message = None
         self.executed_at = None
+
+    def can_be_reset(self) -> bool:
+        return True
 
     def update_configuration(self, action: "AbstractActionDetails"):
         raise NotImplementedError("update_configuration is not implemented")
@@ -107,7 +122,7 @@ class DSLScriptActionDetails(AbstractActionDetails):
     # resolved DSL script. self.dsl_script where all the dependencies have been replaced by their actual values
     resolved_dsl_script: typing.Optional[str] = dataclasses.field(default=None, repr=False) # should be set to the resolved DSL script
 
-    def get_summary(self, minimal: bool = False) -> str:
+    def get_summary(self, minimal: bool = not octobot_commons.constants.ALLOW_PRIVATE_DATA_LOGS) -> str:
         if minimal:
             # only return the first operator name
             return str(self.dsl_script).split("(")[0]
@@ -143,7 +158,7 @@ class ConfiguredActionDetails(AbstractActionDetails):
     # returned result of the condig action. Set after the action is executed
     result: typing.Optional[dict] = dataclasses.field(default=None, repr=False)
 
-    def get_summary(self, minimal: bool = False) -> str:
+    def get_summary(self, minimal: bool = not octobot_commons.constants.ALLOW_PRIVATE_DATA_LOGS) -> str:
         return self.action
 
     def update_configuration(self, action: "AbstractActionDetails"):
@@ -154,6 +169,10 @@ class ConfiguredActionDetails(AbstractActionDetails):
         self.action = action.action
         self.config = dict(action.config) if action.config is not None else None
         self.result = action.result
+
+    def can_be_reset(self) -> bool:
+        # apply_configuration action cannot be reset
+        return self.action != octobot_flow.enums.ActionType.APPLY_CONFIGURATION.value
 
 
 def parse_action_details(action_details: dict) -> AbstractActionDetails:

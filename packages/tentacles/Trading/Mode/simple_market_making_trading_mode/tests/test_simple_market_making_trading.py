@@ -14,6 +14,7 @@
 #  You should have received a copy of the GNU Lesser General Public
 #  License along with this library.
 import asyncio
+import copy
 import decimal
 import contextlib
 import mock
@@ -22,8 +23,10 @@ import pytest
 
 import async_channel.util as channel_util
 import octobot_commons.constants as commons_constants
+import octobot_commons.configuration.user_inputs as commons_user_inputs
 import octobot_commons.errors as commons_errors
 import octobot_commons.enums as commons_enums
+import octobot_commons.tree as commons_tree
 import octobot_commons.asyncio_tools as asyncio_tools
 import octobot_commons.tests.test_config as test_config
 import octobot_tentacles_manager.api as tentacles_manager_api
@@ -72,6 +75,19 @@ SYMBOL_MARKET = {
     }, 'created': None,
     'percentage': True, 'feeSide': 'get', 'tierBased': False
 }
+
+FORMULA_REFERENCE_PRICE = decimal.Decimal("1.2")
+
+
+def _incomplete_ticker(symbol: str) -> dict:
+    return {
+        trading_enums.ExchangeConstantsTickersColumns.SYMBOL.value: symbol,
+        trading_enums.ExchangeConstantsTickersColumns.CLOSE.value: None,
+        trading_enums.ExchangeConstantsTickersColumns.LAST.value: None,
+        trading_enums.ExchangeConstantsTickersColumns.BASE_VOLUME.value: 0.0,
+        trading_enums.ExchangeConstantsTickersColumns.QUOTE_VOLUME.value: None,
+    }
+
 
 def _get_mm_config(symbol):
     return {
@@ -227,6 +243,183 @@ class TestGetHedgingEngineConfig:
         symbol_cfg = {cls.HEDGING_ENGINE: inner}
         cls.get_hedging_engine_config(symbol_cfg)
         assert cls.AVERAGE_PRICE_COUNTED_MINUTES not in inner
+
+
+class TestGetScheduledVolumeConfig:
+    def test_returns_empty_dict_when_key_missing(self):
+        cls = simple_market_making_trading.SimpleMarketMakingTradingMode
+        assert cls.get_scheduled_volume_config({}) == {}
+
+    def test_returns_empty_dict_when_value_is_none(self):
+        cls = simple_market_making_trading.SimpleMarketMakingTradingMode
+        symbol_cfg = {cls.SCHEDULED_VOLUME: None}
+        assert cls.get_scheduled_volume_config(symbol_cfg) == {}
+
+    def test_returns_empty_dict_when_value_is_empty_object(self):
+        cls = simple_market_making_trading.SimpleMarketMakingTradingMode
+        symbol_cfg = {cls.SCHEDULED_VOLUME: {}}
+        assert cls.get_scheduled_volume_config(symbol_cfg) == {}
+
+    def test_returns_config_when_scheduled_volume_is_set(self):
+        cls = simple_market_making_trading.SimpleMarketMakingTradingMode
+        scheduled_volume_cfg = {
+            cls.MIN_INTERVAL_SECONDS: 1,
+            cls.MAX_INTERVAL_SECONDS: 2,
+            cls.MIN_AMOUNT: 3,
+            cls.MAX_AMOUNT: 4,
+        }
+        symbol_cfg = {cls.SCHEDULED_VOLUME: scheduled_volume_cfg}
+        assert cls.get_scheduled_volume_config(symbol_cfg) == scheduled_volume_cfg
+
+
+@pytest.mark.parametrize(
+    "hedging_exchange_case",
+    (
+        "missing_exchange",
+        "empty_string",
+        "explicit_none",
+    ),
+)
+async def test_init_user_inputs_defaults_valid_hedging_off_without_exchange(hedging_exchange_case):
+    symbol = "BTC/USDT"
+    cls = simple_market_making_trading.SimpleMarketMakingTradingMode
+    real_find_parent = commons_user_inputs._find_parent_config_node
+
+    # Without array_indexes, pair_settings resolves to a list and user_input skips writes;
+    # treat the first row as the parent so init_user_inputs merges defaults into it.
+    def find_parent_pair_settings_row(tentacle_config, parent_input_name, array_indexes):
+        if parent_input_name == cls.CONFIG_PAIR_SETTINGS and not array_indexes:
+            pair_settings_value = tentacle_config.get(cls.CONFIG_PAIR_SETTINGS)
+            if isinstance(pair_settings_value, list) and pair_settings_value:
+                return pair_settings_value[0]
+        return real_find_parent(tentacle_config, parent_input_name, array_indexes)
+
+    async with _get_tools(symbol) as (producer, consumer, exchange_manager):
+        mode = producer.trading_mode
+        mode.trading_config = copy.deepcopy(_get_mm_config(symbol))
+        with mock.patch.object(
+            commons_user_inputs,
+            "_find_parent_config_node",
+            side_effect=find_parent_pair_settings_row,
+        ):
+            mode.init_user_inputs({})
+        pair_config = mode.trading_config[cls.CONFIG_PAIR_SETTINGS][0]
+        hedging_engine_cfg = pair_config[cls.HEDGING_ENGINE]
+        assert hedging_engine_cfg[cls.HEDGING_EXCHANGE] == "" # ensure default is set
+        hedging_engine_cfg[cls.HEDGING_MAX_LOSS_THRESHOLD] = 10
+        hedging_engine_cfg[cls.LEGACY_AVERAGE_PRIVE_COUNTED_MINUTES_KEY] = 60
+        if hedging_exchange_case == "missing_exchange":
+            hedging_engine_cfg.pop(cls.HEDGING_EXCHANGE, None)
+        elif hedging_exchange_case == "empty_string":
+            hedging_engine_cfg[cls.HEDGING_EXCHANGE] = ""
+        elif hedging_exchange_case == "explicit_none":
+            hedging_engine_cfg[cls.HEDGING_EXCHANGE] = None
+        assert producer._load_symbol_trading_config() is True
+        producer.read_config()
+        assert producer.order_book_distribution is not None
+        assert producer.reference_prices_by_exchange
+        with mock.patch.object(hedging, "get_or_create_hedging_engine", mock.Mock()) as get_or_create_mock:
+            await producer._initialize_hedging_engine()
+            get_or_create_mock.assert_not_called()
+        assert producer._hedging_engine is None
+
+
+async def _initialize_reference_prices(producer: simple_market_making_trading.SimpleMarketMakingTradingModeProducer):
+    for reference_prices in producer.reference_prices_by_exchange.values():
+        for reference_price in reference_prices:
+            await reference_price.initialize_if_required(producer.exchange_manager)
+
+
+async def test_handle_market_making_orders_with_formula_and_incomplete_ticker():
+    symbol = "BTC/USDT"
+    trading_mode_cls = simple_market_making_trading.SimpleMarketMakingTradingMode
+    async with _get_tools(symbol) as (producer, consumer, exchange_manager):
+        pair_config = producer.trading_mode.trading_config[trading_mode_cls.CONFIG_PAIR_SETTINGS][0]
+        pair_config[trading_mode_cls.REFERENCE_PRICE] = [{
+            trading_mode_cls.EXCHANGE: "binance",
+            trading_mode_cls.PAIR: symbol,
+            trading_mode_cls.WEIGHT: 1,
+            trading_mode_cls.FORMULA: str(FORMULA_REFERENCE_PRICE),
+        }]
+        producer.read_config()
+        await producer._validate_reference_prices()
+        await _initialize_reference_prices(producer)
+
+        symbol_data = exchange_manager.exchange_symbols_data.get_exchange_symbol_data(symbol)
+        symbol_data.handle_ticker_update(_incomplete_ticker(symbol))
+
+        origin_submit_trading_evaluation = producer.submit_trading_evaluation
+        with mock.patch.object(
+            trading_personal_data,
+            "get_potentially_outdated_price",
+            mock.Mock(side_effect=KeyError("no mark price")),
+        ), mock.patch.object(
+            trading_api,
+            "get_all_exchange_ids_with_same_matrix_id",
+            mock.Mock(return_value=[exchange_manager.id]),
+        ), mock.patch.object(
+            trading_api,
+            "get_exchange_manager_from_exchange_id",
+            mock.Mock(return_value=exchange_manager),
+        ):
+            assert await producer._get_reference_price() == FORMULA_REFERENCE_PRICE
+
+            with mock.patch.object(
+                producer,
+                "submit_trading_evaluation",
+                mock.AsyncMock(side_effect=origin_submit_trading_evaluation),
+            ) as submit_trading_evaluation_mock:
+                current_price = decimal.Decimal("1000")
+                trigger_source = "ref_price"
+                symbol_market = copy.deepcopy(SYMBOL_MARKET)
+                symbol_market["limits"]["cost"]["min"] = 0.01
+                assert await producer._handle_market_making_orders(
+                    current_price, symbol_market, trigger_source, False
+                ) is True
+
+                submit_trading_evaluation_mock.assert_called_once()
+                data = submit_trading_evaluation_mock.mock_calls[0].kwargs["data"]
+                assert data[simple_market_making_trading.SimpleMarketMakingTradingModeConsumer.CURRENT_PRICE_KEY] == (
+                    current_price
+                )
+                order_plan: market_making_trading_mode.OrdersUpdatePlan = data[
+                    simple_market_making_trading.SimpleMarketMakingTradingModeConsumer.ORDER_ACTIONS_PLAN_KEY
+                ]
+                assert len(order_plan.order_actions) == 10
+                buy_actions = [
+                    action for action in order_plan.order_actions
+                    if isinstance(action, market_making_trading_mode.CreateOrderAction)
+                    and action.order_data.side == trading_enums.TradeOrderSide.BUY
+                ]
+                sell_actions = [
+                    action for action in order_plan.order_actions
+                    if isinstance(action, market_making_trading_mode.CreateOrderAction)
+                    and action.order_data.side == trading_enums.TradeOrderSide.SELL
+                ]
+                assert len(buy_actions) == len(sell_actions) == 5
+                assert all(action.order_data.price < FORMULA_REFERENCE_PRICE for action in buy_actions)
+                assert all(action.order_data.price > FORMULA_REFERENCE_PRICE for action in sell_actions)
+                min_spread_ratio = decimal.Decimal("5") / decimal.Decimal("100")
+                expected_best_bid = FORMULA_REFERENCE_PRICE * (
+                    trading_constants.ONE - min_spread_ratio / decimal.Decimal("2")
+                )
+                assert buy_actions[0].order_data.price == expected_best_bid
+
+                for _ in range(len(order_plan.order_actions)):
+                    await asyncio_tools.wait_asyncio_next_cycle()
+
+                open_orders = exchange_manager.exchange_personal_data.orders_manager.get_open_orders(symbol)
+                assert len(open_orders) == 10
+                assert all(
+                    order.origin_price < FORMULA_REFERENCE_PRICE
+                    for order in open_orders
+                    if order.side == trading_enums.TradeOrderSide.BUY
+                )
+                assert all(
+                    order.origin_price > FORMULA_REFERENCE_PRICE
+                    for order in open_orders
+                    if order.side == trading_enums.TradeOrderSide.SELL
+                )
 
 
 async def test_handle_market_making_orders_from_no_orders():
@@ -425,6 +618,25 @@ async def test_start():
             # no scheduled or stop watcher config
             scheduled_volume_start_mock.assert_not_called()
              # exited func before these calls
+            advanced_reference_price_initialize_mock.assert_awaited_once()
+            _ensure_market_making_orders_and_reschedule_mock.assert_called_once()
+            schedule_bot_stop_mock.assert_not_called()
+            assert producer._scheduled_volume is None
+            mm_start_mock.reset_mock()
+            producer_start_mock.reset_mock()
+            scheduled_volume_start_mock.reset_mock()
+            advanced_reference_price_initialize_mock.reset_mock()
+            _ensure_market_making_orders_and_reschedule_mock.reset_mock()
+            schedule_bot_stop_mock.reset_mock()
+            assert producer.healthy is True
+            assert producer.should_stop is False
+
+            producer.healthy = True
+            pair_config[simple_market_making_trading.SimpleMarketMakingTradingMode.SCHEDULED_VOLUME] = None
+            await producer.start()
+            mm_start_mock.assert_not_called()
+            producer_start_mock.assert_called_once()
+            scheduled_volume_start_mock.assert_not_called()
             advanced_reference_price_initialize_mock.assert_awaited_once()
             _ensure_market_making_orders_and_reschedule_mock.assert_called_once()
             schedule_bot_stop_mock.assert_not_called()
@@ -1308,12 +1520,6 @@ async def test_force_stop_strategy_integration():
             assert order.is_cancelled() or order.is_closed()
 
 
-async def _initialize_reference_prices(producer: simple_market_making_trading.SimpleMarketMakingTradingModeProducer):
-    for reference_prices in producer.reference_prices_by_exchange.values():
-        for reference_price in reference_prices:
-            await reference_price.initialize_if_required(producer.exchange_manager)
-
-
 async def test_get_reference_price():
     symbol = "BTC/USDT"
     async with _get_tools(symbol) as (producer, consumer, exchange_manager):
@@ -1742,6 +1948,77 @@ async def test_register_pair_requirement_on_reference_exchange():
             assert commons_enums.TimeFrames.FOUR_HOURS in time_frames
             assert len(time_frames) == 2
 
+        # Test 9: Lazy-load markets before registration when exchange uses lazyLoadMarkets
+        lazy_load_symbol = "MCADE/WETH@BASE!HYDREX"
+        mock_ref_price_9 = mock.Mock(spec=advanced_reference_price_import.AdvancedPriceSource)
+        mock_ref_price_9.pair = lazy_load_symbol
+        mock_ref_price_9.initialize_if_required = mock.AsyncMock()
+        mock_ref_price_9.get_dependencies = mock.Mock(return_value=[
+            exchange_operators.ExchangeDataDependency(
+                symbol=lazy_load_symbol,
+                time_frame=None,
+                data_source=trading_constants.MARK_PRICE_CHANNEL
+            ),
+            exchange_operators.ExchangeDataDependency(
+                symbol=lazy_load_symbol,
+                time_frame=commons_enums.TimeFrames.ONE_HOUR.value,
+                data_source=trading_constants.OHLCV_CHANNEL
+            ),
+        ])
+        producer._hedging_engine = None
+        loaded_symbols = {lazy_load_symbol, "ETH/USDT"}
+        call_sequence = []
+        initial_symbols = set(exchange_manager.exchange.symbols)
+
+        async def _record_connector_load_markets(symbols):
+            call_sequence.append("load_markets_for_symbols")
+            exchange_manager.exchange.symbols.update(loaded_symbols)
+            return []
+
+        async def _record_register(*args, **kwargs):
+            call_sequence.append("register_new_pairs_on_exchange_manager")
+
+        with mock.patch.object(
+            exchange_manager.exchange, "lazy_load_markets", mock.Mock(return_value=True)
+        ), mock.patch.object(
+            exchange_manager.exchange, "get_all_available_symbols", mock.Mock(return_value=loaded_symbols)
+        ), mock.patch.object(
+            exchange_manager.exchange.connector, "load_markets_for_symbols",
+            mock.AsyncMock(side_effect=_record_connector_load_markets), create=True
+        ) as load_markets_mock, mock.patch.object(
+            trading_api, "register_new_pairs_on_exchange_manager", mock.AsyncMock(side_effect=_record_register)
+        ) as register_mock:
+            await producer._register_pair_requirement_on_reference_exchange(
+                exchange_manager, [mock_ref_price_9]
+            )
+            load_markets_mock.assert_awaited_once_with([lazy_load_symbol])
+            assert set(exchange_manager.client_symbols) == initial_symbols | loaded_symbols
+            assert call_sequence.index("load_markets_for_symbols") < call_sequence.index("register_new_pairs_on_exchange_manager")
+            assert register_mock.await_count == 2
+
+        # Test 9b: Do not lazy-load when exchange does not use lazyLoadMarkets
+        mock_ref_price_9b = mock.Mock(spec=advanced_reference_price_import.AdvancedPriceSource)
+        mock_ref_price_9b.pair = "ETH/USDT"
+        mock_ref_price_9b.initialize_if_required = mock.AsyncMock()
+        mock_ref_price_9b.get_dependencies = mock.Mock(return_value=[
+            exchange_operators.ExchangeDataDependency(
+                symbol="ETH/USDT",
+                time_frame=None,
+                data_source=trading_constants.MARK_PRICE_CHANNEL
+            )
+        ])
+        with mock.patch.object(
+            exchange_manager.exchange, "lazy_load_markets", mock.Mock(return_value=False)
+        ), mock.patch.object(
+            exchange_manager.exchange.connector, "load_markets_for_symbols", mock.AsyncMock(), create=True
+        ) as load_markets_mock, mock.patch.object(
+            trading_api, "register_new_pairs_on_exchange_manager", mock.AsyncMock()
+        ):
+            await producer._register_pair_requirement_on_reference_exchange(
+                exchange_manager, [mock_ref_price_9b]
+            )
+            load_markets_mock.assert_not_called()
+
 
 async def test_ensure_dependencies():
     symbol = "BTC/USDT"
@@ -2045,15 +2322,20 @@ async def test_reschedule_if_necessary():
 
 async def test_register_pair_requirement_on_reference_exchanges():
     symbol = "BTC/USDT"
+    price_topic = commons_enums.InitializationEventExchangeTopics.PRICE.value
+    dependency_symbols_by_topic = {price_topic: {"ETH/USDT"}}
+
     async with _get_tools(symbol) as (producer, consumer, exchange_manager):
         # Setup mock reference price specs
         mock_ref_price_spec_1 = mock.Mock()
         mock_ref_price_spec_1.initialize_if_required = mock.AsyncMock()
         mock_ref_price_spec_1.get_dependencies = mock.Mock(return_value=[])
+        mock_ref_price_spec_1.formula = ""
 
         mock_ref_price_spec_2 = mock.Mock()
         mock_ref_price_spec_2.initialize_if_required = mock.AsyncMock()
         mock_ref_price_spec_2.get_dependencies = mock.Mock(return_value=[])
+        mock_ref_price_spec_2.formula = ""
 
         # Set up reference_prices_by_exchange with the local exchange
         local_exchange_name = exchange_manager.exchange_name
@@ -2062,6 +2344,13 @@ async def test_register_pair_requirement_on_reference_exchanges():
         }
         producer.subscribed_requirements_exchange_ids = set()
 
+        captured_pending_symbols_by_topic = {}
+
+        async def capture_wait_for_symbols_init(exchange_mgr, symbols_by_pending_topic):
+            captured_pending_symbols_by_topic.clear()
+            captured_pending_symbols_by_topic.update(symbols_by_pending_topic)
+            assert producer.waiting_for_dependencies_init is True
+
         with mock.patch.object(
             trading_api, "get_all_exchange_ids_with_same_matrix_id", mock.Mock(return_value=[exchange_manager.id])
         ) as get_all_exchange_ids_mock, mock.patch.object(
@@ -2069,8 +2358,10 @@ async def test_register_pair_requirement_on_reference_exchanges():
         ) as get_exchange_manager_mock, mock.patch.object(
             producer, "_register_pair_requirement_on_reference_exchange", mock.AsyncMock()
         ) as register_pair_mock, mock.patch.object(
-            producer, "_ensure_dependencies", mock.AsyncMock()
-        ) as ensure_dependencies_mock:
+            producer, "_ensure_dependencies", mock.AsyncMock(return_value=dependency_symbols_by_topic)
+        ) as ensure_dependencies_mock, mock.patch.object(
+            producer, "_wait_for_symbols_init", mock.AsyncMock(side_effect=capture_wait_for_symbols_init)
+        ) as wait_for_symbols_init_mock:
             # Test 1: First call - should register and subscribe
             await producer._register_pair_requirement_on_reference_exchanges()
 
@@ -2084,12 +2375,18 @@ async def test_register_pair_requirement_on_reference_exchanges():
             mock_ref_price_spec_1.initialize_if_required.assert_awaited_once_with(exchange_manager)
             mock_ref_price_spec_2.initialize_if_required.assert_awaited_once_with(exchange_manager)
             assert ensure_dependencies_mock.await_count == 2
+            wait_for_symbols_init_mock.assert_awaited_once_with(
+                exchange_manager, {price_topic: set()}
+            )
+            assert captured_pending_symbols_by_topic[price_topic] == set()
+            assert producer.waiting_for_dependencies_init is False
 
             # Reset mocks
             register_pair_mock.reset_mock()
             mock_ref_price_spec_1.initialize_if_required.reset_mock()
             mock_ref_price_spec_2.initialize_if_required.reset_mock()
             ensure_dependencies_mock.reset_mock()
+            wait_for_symbols_init_mock.reset_mock()
 
             # Test 2: Second call - already subscribed, should not register again
             await producer._register_pair_requirement_on_reference_exchanges()
@@ -2098,3 +2395,175 @@ async def test_register_pair_requirement_on_reference_exchanges():
             mock_ref_price_spec_1.initialize_if_required.assert_not_called()
             mock_ref_price_spec_2.initialize_if_required.assert_not_called()
             ensure_dependencies_mock.assert_not_called()
+            wait_for_symbols_init_mock.assert_not_called()
+
+        # Test 3: Other exchange with formula - pending symbols should include dependency symbols
+        other_exchange_manager = mock.Mock()
+        other_exchange_manager.id = "kraken-1"
+        other_exchange_manager.exchange_name = "kraken"
+        other_exchange_manager.bot_id = exchange_manager.bot_id
+
+        mock_ref_price_spec_with_formula = mock.Mock()
+        mock_ref_price_spec_with_formula.initialize_if_required = mock.AsyncMock()
+        mock_ref_price_spec_with_formula.get_dependencies = mock.Mock(return_value=[])
+        mock_ref_price_spec_with_formula.formula = "50000"
+
+        producer.reference_prices_by_exchange = {
+            other_exchange_manager.exchange_name: [mock_ref_price_spec_with_formula]
+        }
+        producer.subscribed_requirements_exchange_ids = set()
+
+        with mock.patch.object(
+            trading_api, "get_all_exchange_ids_with_same_matrix_id", mock.Mock(return_value=[other_exchange_manager.id])
+        ), mock.patch.object(
+            trading_api, "get_exchange_manager_from_exchange_id", mock.Mock(return_value=other_exchange_manager)
+        ), mock.patch.object(
+            producer, "_register_pair_requirement_on_reference_exchange", mock.AsyncMock()
+        ), mock.patch.object(
+            producer, "_ensure_dependencies", mock.AsyncMock(return_value=dependency_symbols_by_topic)
+        ), mock.patch.object(
+            producer, "_wait_for_symbols_init", mock.AsyncMock()
+        ) as wait_for_symbols_init_mock:
+            await producer._register_pair_requirement_on_reference_exchanges()
+
+            wait_for_symbols_init_mock.assert_awaited_once_with(
+                other_exchange_manager, {price_topic: {"ETH/USDT"}}
+            )
+
+        # Test 4: Other exchange without formula - still wait for mark price dependencies
+        mock_ref_price_spec_without_formula = mock.Mock()
+        mock_ref_price_spec_without_formula.initialize_if_required = mock.AsyncMock()
+        mock_ref_price_spec_without_formula.get_dependencies = mock.Mock(return_value=[])
+        mock_ref_price_spec_without_formula.formula = ""
+
+        producer.reference_prices_by_exchange = {
+            other_exchange_manager.exchange_name: [mock_ref_price_spec_without_formula]
+        }
+        producer.subscribed_requirements_exchange_ids = set()
+
+        with mock.patch.object(
+            trading_api, "get_all_exchange_ids_with_same_matrix_id", mock.Mock(return_value=[other_exchange_manager.id])
+        ), mock.patch.object(
+            trading_api, "get_exchange_manager_from_exchange_id", mock.Mock(return_value=other_exchange_manager)
+        ), mock.patch.object(
+            producer, "_register_pair_requirement_on_reference_exchange", mock.AsyncMock()
+        ), mock.patch.object(
+            producer, "_ensure_dependencies", mock.AsyncMock(return_value=dependency_symbols_by_topic)
+        ), mock.patch.object(
+            producer, "_wait_for_symbols_init", mock.AsyncMock()
+        ) as wait_for_symbols_init_mock:
+            await producer._register_pair_requirement_on_reference_exchanges()
+
+            wait_for_symbols_init_mock.assert_awaited_once_with(
+                other_exchange_manager, {price_topic: {"ETH/USDT"}}
+            )
+
+        # Test 5: Local exchange with formula - pending symbols should stay empty
+        mock_ref_price_spec_local_formula = mock.Mock()
+        mock_ref_price_spec_local_formula.initialize_if_required = mock.AsyncMock()
+        mock_ref_price_spec_local_formula.get_dependencies = mock.Mock(return_value=[])
+        mock_ref_price_spec_local_formula.formula = "50000"
+
+        producer.reference_prices_by_exchange = {
+            local_exchange_name: [mock_ref_price_spec_local_formula]
+        }
+        producer.subscribed_requirements_exchange_ids = set()
+
+        with mock.patch.object(
+            trading_api, "get_all_exchange_ids_with_same_matrix_id", mock.Mock(return_value=[exchange_manager.id])
+        ), mock.patch.object(
+            trading_api, "get_exchange_manager_from_exchange_id", mock.Mock(return_value=exchange_manager)
+        ), mock.patch.object(
+            producer, "_register_pair_requirement_on_reference_exchange", mock.AsyncMock()
+        ), mock.patch.object(
+            producer, "_ensure_dependencies", mock.AsyncMock(return_value=dependency_symbols_by_topic)
+        ), mock.patch.object(
+            producer, "_wait_for_symbols_init", mock.AsyncMock()
+        ) as wait_for_symbols_init_mock:
+            await producer._register_pair_requirement_on_reference_exchanges()
+
+            wait_for_symbols_init_mock.assert_awaited_once_with(
+                exchange_manager, {price_topic: set()}
+            )
+
+
+class TestWaitForSymbolsInit:
+    async def test_creates_events_and_waits_for_each_symbol(self):
+        symbol = "BTC/USDT"
+        price_topic = commons_enums.InitializationEventExchangeTopics.PRICE.value
+        async with _get_tools(symbol) as (producer, consumer, exchange_manager):
+            mock_event_provider = mock.Mock()
+            mock_get_or_create_event = mock.Mock()
+            mock_event_provider.get_or_create_event = mock_get_or_create_event
+
+            with mock.patch.object(
+                commons_tree.EventProvider, "instance", mock.Mock(return_value=mock_event_provider)
+            ), mock.patch.object(
+                trading_util, "wait_for_topic_init", mock.AsyncMock()
+            ) as wait_for_topic_init_mock:
+                await producer._wait_for_symbols_init(
+                    exchange_manager, {price_topic: {"BTC/USDT", "ETH/USDT"}}
+                )
+
+                assert mock_get_or_create_event.call_count == 2
+                for pending_symbol in ["BTC/USDT", "ETH/USDT"]:
+                    mock_get_or_create_event.assert_any_call(
+                        exchange_manager.bot_id,
+                        commons_tree.get_exchange_path(
+                            exchange_manager.exchange_name,
+                            price_topic,
+                            symbol=pending_symbol,
+                        ),
+                        allow_creation=True,
+                    )
+                wait_for_topic_init_mock.assert_awaited_once_with(
+                    exchange_manager,
+                    1 * commons_constants.MINUTE_TO_SECONDS,
+                    price_topic,
+                    symbols=mock.ANY,
+                )
+                awaited_symbols = wait_for_topic_init_mock.await_args.kwargs["symbols"]
+                assert set(awaited_symbols) == {"BTC/USDT", "ETH/USDT"}
+
+    async def test_timeout_is_swallowed(self):
+        symbol = "BTC/USDT"
+        price_topic = commons_enums.InitializationEventExchangeTopics.PRICE.value
+        async with _get_tools(symbol) as (producer, consumer, exchange_manager):
+            mock_event_provider = mock.Mock()
+            mock_event_provider.get_or_create_event = mock.Mock()
+
+            with mock.patch.object(
+                commons_tree.EventProvider, "instance", mock.Mock(return_value=mock_event_provider)
+            ), mock.patch.object(
+                trading_util, "wait_for_topic_init", mock.AsyncMock(side_effect=asyncio.TimeoutError)
+            ) as wait_for_topic_init_mock:
+                await producer._wait_for_symbols_init(
+                    exchange_manager, {price_topic: {"BTC/USDT"}}
+                )
+
+                wait_for_topic_init_mock.assert_awaited_once()
+
+    async def test_empty_symbols_still_waits(self):
+        symbol = "BTC/USDT"
+        price_topic = commons_enums.InitializationEventExchangeTopics.PRICE.value
+        async with _get_tools(symbol) as (producer, consumer, exchange_manager):
+            mock_event_provider = mock.Mock()
+            mock_get_or_create_event = mock.Mock()
+            mock_event_provider.get_or_create_event = mock_get_or_create_event
+
+            with mock.patch.object(
+                commons_tree.EventProvider, "instance", mock.Mock(return_value=mock_event_provider)
+            ), mock.patch.object(
+                trading_util, "wait_for_topic_init", mock.AsyncMock()
+            ) as wait_for_topic_init_mock:
+                await producer._wait_for_symbols_init(
+                    exchange_manager, {price_topic: set()}
+                )
+
+                mock_get_or_create_event.assert_not_called()
+                wait_for_topic_init_mock.assert_awaited_once_with(
+                    exchange_manager,
+                    1 * commons_constants.MINUTE_TO_SECONDS,
+                    price_topic,
+                    symbols=[],
+                )

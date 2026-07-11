@@ -216,7 +216,6 @@ from tentacles.Services.Interfaces.web_interface.models.interface_settings impor
 from tentacles.Services.Interfaces.web_interface.models.logs import (
     LOG_EXPORT_FORMAT,
     export_logs,
-    async_share_logs,
 )
 from tentacles.Services.Interfaces.web_interface.models.medias import (
     is_valid_tentacle_image_path,
@@ -292,6 +291,8 @@ from tentacles.Services.Interfaces.web_interface.models.web_interface_tab import
 from tentacles.Services.Interfaces.web_interface.models.distributions import (
     save_market_making_configuration,
     get_market_making_services,
+    get_node_local_endpoint,
+    get_node_web_ui_url,
 )
 
 
@@ -514,5 +515,7 @@ __all__ = [
     "WebInterfaceTab",
     "save_market_making_configuration",
     "get_market_making_services",
+    "get_node_local_endpoint",
+    "get_node_web_ui_url",
     "get_dsl_keywords_docs",
 ]

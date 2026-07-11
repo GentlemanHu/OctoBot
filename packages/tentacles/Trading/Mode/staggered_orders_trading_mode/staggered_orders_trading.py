@@ -742,7 +742,9 @@ class StaggeredOrdersTradingModeProducer(trading_modes.AbstractTradingModeProduc
                 StaggeredOrdersTradingModeProducer.AVAILABLE_FUNDS.pop(self.exchange_manager.id, None)
         await super().stop()
 
-    async def set_final_eval(self, matrix_id: str, cryptocurrency: str, symbol: str, time_frame, trigger_source: str):
+    async def set_final_eval(
+        self, matrix_id: str, cryptocurrency: str, symbol: str, time_frame, trigger_source: str,
+    ):
         # nothing to do: this is not a strategy related trading mode
         pass
 
@@ -760,7 +762,7 @@ class StaggeredOrdersTradingModeProducer(trading_modes.AbstractTradingModeProduc
 
     async def manual_trigger(
         self, matrix_id: str, cryptocurrency: str,
-        symbol: str, time_frame, trigger_source: str
+        symbol: str, time_frame, trigger_source: str,
     ) -> None:
         await self.trigger_staggered_orders_creation(reload_config=False)
 

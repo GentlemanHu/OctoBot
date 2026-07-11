@@ -2,7 +2,6 @@ import dataclasses
 import typing
 
 import octobot_commons.logging
-import octobot_trading.exchanges.util.exchange_data as exchange_data_import
 import octobot_trading.exchanges
 import octobot_trading.storage.orders_storage
 import octobot_trading.api
@@ -19,17 +18,17 @@ class ExchangeAccountElements(account_elements_import.AccountElements):
     """
     Defines the ideal exchange account state of an automation. Only contains sharable data
     """
-    orders: exchange_data_import.OrdersDetails = dataclasses.field(default_factory=exchange_data_import.OrdersDetails)
-    positions: list[exchange_data_import.PositionDetails] = dataclasses.field(default_factory=list)
+    orders: octobot_trading.exchanges.OrdersDetails = dataclasses.field(default_factory=octobot_trading.exchanges.OrdersDetails)
+    positions: list[octobot_trading.exchanges.PositionDetails] = dataclasses.field(default_factory=list)
     trades: list[dict] = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         super().__post_init__()
         if self.orders and isinstance(self.orders, dict):
-            self.orders = exchange_data_import.OrdersDetails.from_dict(self.orders)
+            self.orders = octobot_trading.exchanges.OrdersDetails.from_dict(self.orders)
         if self.positions and isinstance(self.positions[0], dict):
             self.positions = [
-                exchange_data_import.PositionDetails.from_dict(position) for position in self.positions # type: ignore
+                octobot_trading.exchanges.PositionDetails.from_dict(position) for position in self.positions # type: ignore
             ]
         if self.trades and isinstance(self.trades[0], dict):
             self.trades = [
@@ -45,6 +44,15 @@ class ExchangeAccountElements(account_elements_import.AccountElements):
     def has_pending_groups(self) -> bool:
         # TODO
         return False
+
+    def get_open_orders_symbols(self) -> list[str]:
+        if not self.orders.open_orders:
+            return []
+        return octobot_trading.personal_data.get_symbols_from_orders(
+            octobot_trading.exchanges.OrdersDetails(
+                open_orders=list(self.orders.open_orders),
+            )
+        )
 
     def sync_from_exchange_manager(
         self,
@@ -64,32 +72,9 @@ class ExchangeAccountElements(account_elements_import.AccountElements):
         return changed_elements
 
     def append_new_trades_deduped(self, trades: list[dict]) -> bool:
-        exchange_trade_id_key = octobot_trading.enums.ExchangeConstantsOrderColumns.EXCHANGE_TRADE_ID.value
-        exchange_order_exchange_id_key = octobot_trading.enums.ExchangeConstantsOrderColumns.EXCHANGE_ID.value
-
-        def _identity_key(trade: dict) -> typing.Optional[tuple[str, typing.Hashable]]:
-            exchange_trade_id = trade.get(exchange_trade_id_key)
-            if exchange_trade_id is not None:
-                return exchange_trade_id_key, exchange_trade_id
-            exchange_order_exchange_id = trade.get(exchange_order_exchange_id_key)
-            if exchange_order_exchange_id is not None:
-                return exchange_order_exchange_id_key, exchange_order_exchange_id
-            return None
-
-        known_trade_keys: set[tuple[str, typing.Hashable]] = set()
-        for trade in self.trades:
-            key = _identity_key(trade)
-            if key is not None:
-                known_trade_keys.add(key)
-        added = False
-        for trade in trades:
-            key = _identity_key(trade)
-            if key is None or key in known_trade_keys:
-                continue
-            known_trade_keys.add(key)
-            self.trades.append(dict(trade))
-            added = True
-        return added
+        previous_count = len(self.trades)
+        self.trades = octobot_trading.personal_data.merge_trades_deduped(self.trades, trades)
+        return len(self.trades) != previous_count
 
     def merge_trades_from_exchange_account_elements(
         self,
@@ -174,7 +159,7 @@ class ExchangeAccountElements(account_elements_import.AccountElements):
     def sync_positions_from_exchange_manager(self, exchange_manager: octobot_trading.exchanges.ExchangeManager) -> bool:
         previous_positions = self.positions
         self.positions = [
-            exchange_data_import.PositionDetails(position.to_dict(), position.symbol_contract.to_dict())
+            octobot_trading.exchanges.PositionDetails(position.to_dict(), position.symbol_contract.to_dict())
             for position in octobot_trading.api.get_positions(exchange_manager)
         ]
         return previous_positions != self.positions

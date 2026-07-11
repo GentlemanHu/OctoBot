@@ -39,15 +39,37 @@ class TestAccountsState(unittest.TestCase):
                 accounts = [
                     octobot_protocol.models.account.Account(
                         id = '', 
-                        account_type = 'GENERIC', 
                         name = '', 
                         is_simulated = True, 
                         description = '', 
+                        state = octobot_protocol.models.account_state.AccountState(
+                            permissions = [
+                                'read'
+                                ], 
+                            status = 'valid', 
+                            message = 'pending_validation', ), 
                         created_at = datetime.datetime.strptime('2013-10-20 19:20:30.00', '%Y-%m-%d %H:%M:%S.%f'), 
                         updated_at = datetime.datetime.strptime('2013-10-20 19:20:30.00', '%Y-%m-%d %H:%M:%S.%f'), 
-                        exchange_account = null, 
-                        blockchain_account = null, 
-                        generic_account = null, )
+                        authentication_id = '', 
+                        assets = [
+                            octobot_protocol.models.detailed_assets_for_trading_type.DetailedAssetsForTradingType(
+                                trading_type = 'spot', 
+                                assets = [
+                                    octobot_protocol.models.detailed_asset.DetailedAsset(
+                                        symbol = '', 
+                                        total = 1.337, 
+                                        available = 1.337, )
+                                    ], )
+                            ], 
+                        specifics = null, )
+                    ],
+                exchange_configs = [
+                    octobot_protocol.models.exchange_config.ExchangeConfig(
+                        id = '', 
+                        name = '', 
+                        exchange = '', 
+                        sandboxed = True, 
+                        url = '', )
                     ]
             )
         else:

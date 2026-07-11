@@ -20,11 +20,14 @@ import decimal
 import typing
 
 import octobot_commons.enums as commons_enums
+import octobot_commons.tree as commons_tree
 import octobot_commons.constants as commons_constants
 import octobot_commons.symbols.symbol_util as symbol_util
+import octobot_commons.list_util as list_util
 import octobot_commons.errors as commons_errors
 
 import octobot_trading.constants as trading_constants
+import octobot_trading.dsl.dsl_dependencies as dsl_dependencies
 import octobot_trading.personal_data as trading_personal_data
 import octobot_trading.exchange_channel as exchanges_channel
 import octobot_trading.exchanges as trading_exchanges
@@ -311,7 +314,8 @@ class SimpleMarketMakingTradingMode(market_making_trading.MarketMakingTradingMod
             ),
             self.HEDGING_EXCHANGE: self.UI.user_input(
                 self.HEDGING_EXCHANGE, commons_enums.UserInputTypes.TEXT,
-                "binance", inputs, parent_input_name=self.HEDGING_ENGINE,
+                "", inputs, parent_input_name=self.HEDGING_ENGINE,
+                other_schema_values={"minLength": 0},
                 title="Hedging exchange: exchange to hedge on. This exchange must be enabled in exchange configuration.",
             ),
         }
@@ -377,6 +381,13 @@ class SimpleMarketMakingTradingMode(market_making_trading.MarketMakingTradingMod
         ]
 
     @classmethod
+    def get_tentacle_config_traded_symbols(cls, trading_config: dict, reference_market: str) -> list[str]:
+        return list_util.deduplicate([
+            pair_setting[cls.CONFIG_PAIR]
+            for pair_setting in trading_config.get(cls.CONFIG_PAIR_SETTINGS, [])
+        ])
+
+    @classmethod
     def get_price_sources_by_exchange(
         cls, symbol_trading_config: dict
     ) -> dict[str, list[advanced_reference_price_import.AdvancedPriceSource]]:
@@ -400,14 +411,19 @@ class SimpleMarketMakingTradingMode(market_making_trading.MarketMakingTradingMod
         cls, symbol_trading_config: dict
     ):
         try:
-            return symbol_trading_config[cls.SCHEDULED_VOLUME]
+            raw_config = symbol_trading_config[cls.SCHEDULED_VOLUME]
+            if not raw_config:
+                return {}
         except KeyError:
             return {}
+        return raw_config
 
     @classmethod
     def get_hedging_engine_config(cls, symbol_trading_config: dict) -> dict[str, typing.Any]:
         try:
             raw_config = symbol_trading_config[cls.HEDGING_ENGINE]
+            if not raw_config:
+                return {}
         except KeyError:
             return {}
         hedging_config = dict(raw_config)
@@ -776,11 +792,7 @@ class SimpleMarketMakingTradingModeProducer(market_making_trading.MarketMakingTr
             self.logger.info("Disabled hedging engine: no hedging engine config")
 
     async def _initialize_scheduled_volume(self):
-        try:
-            schedule_config = self.trading_mode.get_scheduled_volume_config(self.symbol_trading_config)
-        except KeyError:
-            self.logger.error("Skipped scheduled volume: no scheduled volume config")
-            return
+        schedule_config = self.trading_mode.get_scheduled_volume_config(self.symbol_trading_config)
         if max_amount := schedule_config.get(self.trading_mode.MAX_AMOUNT, 0):
             if self._hedging_engine is not None:
                 self.logger.error(
@@ -955,7 +967,11 @@ class SimpleMarketMakingTradingModeProducer(market_making_trading.MarketMakingTr
 
     async def _ensure_dependencies(
         self, exchange_manager, dependencies: typing.List[exchange_operators.ExchangeDataDependency]
-    ):
+    ) -> dict[str, set[str]]:
+        await dsl_dependencies.resolve_missing_dependencies_if_required(dependencies, exchange_manager)
+        symbols_by_pending_topic: dict[str, set[str]] = {
+            commons_enums.InitializationEventExchangeTopics.PRICE.value: set(),
+        }
         exchange_id = trading_api.get_exchange_manager_id(exchange_manager)
         for dependency in dependencies:
             if dependency.data_source == trading_constants.OHLCV_CHANNEL:
@@ -966,11 +982,17 @@ class SimpleMarketMakingTradingModeProducer(market_making_trading.MarketMakingTr
                     dependency.time_frame
                 )
                 # also subscribe to mark price to trigger on price updates
-                await self._subscribe_to_exchange_mark_price(exchange_id, exchange_manager)
+                await self._subscribe_to_exchange_mark_price(exchange_id, exchange_manager, self.symbol)
+                symbols_by_pending_topic[commons_enums.InitializationEventExchangeTopics.PRICE.value].add(dependency.symbol)
             elif dependency.data_source == trading_constants.MARK_PRICE_CHANNEL:
-                await self._subscribe_to_exchange_mark_price(exchange_id, exchange_manager)
+                for symbol in [self.symbol, dependency.symbol]:
+                    await self._subscribe_to_exchange_mark_price(
+                        exchange_id, exchange_manager, symbol
+                    )
+                symbols_by_pending_topic[commons_enums.InitializationEventExchangeTopics.PRICE.value].add(dependency.symbol)
             else:
                 self.logger.error(f"Unknown dependency data source: {dependency.data_source}")
+        return symbols_by_pending_topic
 
     async def _subscribe_to_exchange_ohlcv(
         self, exchange_id: str, exchange_manager, symbol: str, time_frame: str
@@ -1016,16 +1038,54 @@ class SimpleMarketMakingTradingModeProducer(market_making_trading.MarketMakingTr
                 continue
             exchange_reference_prices = self.reference_prices_by_exchange[other_exchange_key]
             if exchange_id not in self.subscribed_requirements_exchange_ids:
+                all_symbols_by_pending_topic: dict[str, set[str]] = {
+                    commons_enums.InitializationEventExchangeTopics.PRICE.value: set(),
+                }
                 await self._register_pair_requirement_on_reference_exchange(exchange_manager, exchange_reference_prices)
                 self.subscribed_requirements_exchange_ids.add(exchange_id)
                 for reference_price_spec in exchange_reference_prices:
                     # exchange just initialized, subscribe to channels and initialize all ref prices for this exchange
                     await reference_price_spec.initialize_if_required(exchange_manager)
-                    await self._ensure_dependencies(
+                    symbols_by_pending_topic = await self._ensure_dependencies(
                         exchange_manager,
                         reference_price_spec.get_dependencies(exchange_manager)
                     )
-    
+                    if exchange_manager is not self.exchange_manager:
+                        # wait for mark price init on reference exchanges (defillama, etc.)
+                        all_symbols_by_pending_topic[commons_enums.InitializationEventExchangeTopics.PRICE.value].update(
+                            symbols_by_pending_topic[commons_enums.InitializationEventExchangeTopics.PRICE.value]
+                        )
+                with self._dependencies_init():
+                    await self._wait_for_symbols_init(exchange_manager, all_symbols_by_pending_topic)
+
+    async def _wait_for_symbols_init(
+        self, exchange_manager: trading_exchanges.ExchangeManager, symbols_by_pending_topic: dict[str, set[str]]
+    ):
+        for topic, symbols in symbols_by_pending_topic.items():
+            for symbol in symbols:
+                # ensure event exist, create them if they don't so they can be waited for
+                commons_tree.EventProvider.instance().get_or_create_event(
+                    exchange_manager.bot_id, commons_tree.get_exchange_path(
+                        exchange_manager.exchange_name,
+                        topic,
+                        symbol=symbol
+                    ), allow_creation=True
+                )
+            self.logger.info(
+                f"Waiting for {topic} initialization for {symbols} on {exchange_manager.exchange_name}"
+            )
+            try:
+                await trading_util.wait_for_topic_init(
+                    exchange_manager, 1 * commons_constants.MINUTE_TO_SECONDS, topic, symbols=list(symbols)
+                )
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"{topic} initialization for {symbols} on {exchange_manager.exchange_name} timed out"
+                )
+            self.logger.info(
+                f"{topic} initialization for {symbols} on {exchange_manager.exchange_name} completed"
+            )
+
     def _is_registered_on_all_reference_exchanges(self) -> bool:
         return len(self.subscribed_requirements_exchange_ids) >= len(self.reference_prices_by_exchange)
 
@@ -1145,7 +1205,9 @@ class SimpleMarketMakingTradingModeProducer(market_making_trading.MarketMakingTr
         # exchange_reference_prices requirements
         for reference_price in exchange_reference_prices:
             await reference_price.initialize_if_required(exchange_manager)
-            for dependency in reference_price.get_dependencies(exchange_manager):
+            dependencies = reference_price.get_dependencies(exchange_manager)
+            await dsl_dependencies.resolve_missing_dependencies_if_required(dependencies, exchange_manager)
+            for dependency in dependencies:
                 if dependency.data_source == trading_constants.MARK_PRICE_CHANNEL:
                     # mark price = watched symbol
                     watched_symbols.append(dependency.symbol)
@@ -1160,6 +1222,9 @@ class SimpleMarketMakingTradingModeProducer(market_making_trading.MarketMakingTr
         # hedging engine requirements
         if self._hedging_engine and self._hedging_engine.hedging_exchange_name == exchange_manager.exchange_name:
             traded_symbols.append(self.symbol)
+        if exchange_manager.exchange.lazy_load_markets():
+            if symbols_to_load := list(dict.fromkeys(watched_symbols + traded_symbols)):
+                await exchange_manager.load_markets_for_symbols_and_refresh_client_symbols(symbols_to_load)
         if traded_symbols:
             await trading_api.register_new_pairs_on_exchange_manager(
                 exchange_manager,

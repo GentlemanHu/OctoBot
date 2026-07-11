@@ -7,10 +7,12 @@ import octobot_commons.constants as common_constants
 import octobot_commons.symbols as symbol_util
 import octobot_commons.list_util as list_util
 import octobot_commons.logging as common_logging
+import octobot_commons.timestamp_util as timestamp_util
 import octobot_trading.constants as trading_constants
 import octobot_trading.enums
 import octobot_trading.errors
 import octobot_trading.personal_data as personal_data
+import octobot_trading.personal_data.orders.order_util as order_util
 import octobot_trading.exchanges
 import octobot_trading.exchanges.util.exchange_data as exchange_data_import
 import octobot_flow.repositories.exchange
@@ -56,6 +58,48 @@ class ExchangeAccountJob(octobot_flow.repositories.exchange.ExchangeContextMixin
         if self._exchange_manager.is_future:
             coros.append(self._fetch_positions(fetched_authenticated_data))
         await asyncio.gather(*coros)
+        await self._fetch_trades(fetched_authenticated_data)
+
+    @classmethod
+    async def fetch_trades_from_orders(
+        cls,
+        exchange_context: octobot_flow.repositories.exchange.ExchangeContextMixin,
+        orders: exchange_data_import.OrdersDetails,
+    ) -> list[dict]:
+        symbols = order_util.get_symbols_from_orders(orders)
+        if not symbols:
+            return []
+        if exchange_context.profile_data_provider.get_profile_data().trader_simulator.enabled:
+            return []
+        trades_repository = exchange_context.get_exchange_repository_factory().get_trades_repository()
+        try:
+            trades = await trades_repository.fetch_trades(symbols)
+        except octobot_trading.errors.NotSupported as err:
+            common_logging.get_logger(cls.__name__).info(f"Fetching trades is not supported: {err}.")
+            return []
+        common_logging.get_logger(cls.__name__).info(
+            f"Fetched [{exchange_context._exchange_manager.exchange_name}] "
+            f"{len(trades)} trades for {symbols}"
+        )
+        return trades
+
+    async def _fetch_trades(
+        self,
+        fetched_authenticated_data: octobot_flow.entities.FetchedExchangeAccountElements,
+    ):
+        account_elements = self.automation_state.automation.exchange_account_elements
+        orders_for_symbols = exchange_data_import.OrdersDetails(
+            open_orders=list(fetched_authenticated_data.orders.open_orders),
+            missing_orders=(
+                list(account_elements.orders.missing_orders)
+                if account_elements is not None
+                else []
+            ),
+        )
+        fetched_authenticated_data.trades = await self.fetch_trades_from_orders(
+            self,
+            orders_for_symbols,
+        )
 
     async def _update_bot_authenticated_data(
         self,
@@ -79,6 +123,8 @@ class ExchangeAccountJob(octobot_flow.repositories.exchange.ExchangeContextMixin
                 )
             target_account.orders = fetched_authenticated_data.orders
             target_account.positions = fetched_authenticated_data.positions
+            if fetched_authenticated_data.trades:
+                target_account.append_new_trades_deduped(fetched_authenticated_data.trades)
             sub_portfolio_resolver = octobot_flow.logic.exchange.SubPortfolioResolver(
                 self.automation_state
             )
@@ -107,7 +153,7 @@ class ExchangeAccountJob(octobot_flow.repositories.exchange.ExchangeContextMixin
     async def _fetch_ohlcvs(self):
         repository = self.get_exchange_repository_factory().get_ohlcv_repository()
         history_size = scripting_library.get_required_candles_count(
-            self.profile_data_provider.get_profile_data(), trading_constants.MIN_CANDLES_HISTORY_SIZE
+            self.profile_data_provider.get_profile_data(), trading_constants.DEFAULT_CANDLES_HISTORY_SIZE
         )
         symbols = self._get_traded_symbols()
         time_frames = self._get_time_frames()
@@ -213,7 +259,13 @@ class ExchangeAccountJob(octobot_flow.repositories.exchange.ExchangeContextMixin
         )
 
     def _get_time_frames(self) -> list[str]:
-        return scripting_library.get_time_frames(self.profile_data_provider.get_profile_data())
+        profile_data = self.profile_data_provider.get_profile_data()
+        time_frames = list(scripting_library.get_time_frames(profile_data))
+        for action_time_frame in octobot_flow.logic.dsl.get_actions_time_frames_dependencies(
+            self.actions, profile_data
+        ):
+            time_frames.append(action_time_frame.value)
+        return list_util.deduplicate(time_frames)
 
     def _ensure_exchange_dependencies(self):
         if not self.fetched_dependencies.fetched_exchange_data:

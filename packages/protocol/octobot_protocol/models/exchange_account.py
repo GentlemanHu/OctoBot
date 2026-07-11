@@ -17,12 +17,9 @@ import pprint
 import re  # noqa: F401
 import json
 
-from pydantic import BaseModel, ConfigDict, StrictStr
-from typing import Any, ClassVar, Dict, List, Optional
-from octobot_protocol.models.asset import Asset
-from octobot_protocol.models.order import Order
-from octobot_protocol.models.position import Position
-from octobot_protocol.models.trade import Trade
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from typing import Any, ClassVar, Dict, List
+from octobot_protocol.models.account_type import AccountType
 from typing import Optional, Set
 from typing_extensions import Self
 from pydantic_core import to_jsonable_python
@@ -31,16 +28,10 @@ class ExchangeAccount(BaseModel):
     """
     ExchangeAccount
     """ # noqa: E501
-    exchange: StrictStr
+    account_type: AccountType = Field(description="exchange")
     remote_account_id: StrictStr
-    api_key: StrictStr
-    api_secret: StrictStr
-    api_passphrase: Optional[StrictStr] = None
-    assets: Optional[List[Asset]] = None
-    orders: Optional[List[Order]] = None
-    trades: Optional[List[Trade]] = None
-    positions: Optional[List[Position]] = None
-    __properties: ClassVar[List[str]] = ["exchange", "remote_account_id", "api_key", "api_secret", "api_passphrase", "assets", "orders", "trades", "positions"]
+    exchange_config_ids: List[StrictStr]
+    __properties: ClassVar[List[str]] = ["account_type", "remote_account_id", "exchange_config_ids"]
 
     model_config = ConfigDict(
         validate_by_name=True,
@@ -81,34 +72,6 @@ class ExchangeAccount(BaseModel):
             exclude=excluded_fields,
             exclude_none=True,
         )
-        # override the default output from pydantic by calling `to_dict()` of each item in assets (list)
-        _items = []
-        if self.assets:
-            for _item_assets in self.assets:
-                if _item_assets:
-                    _items.append(_item_assets.to_dict())
-            _dict['assets'] = _items
-        # override the default output from pydantic by calling `to_dict()` of each item in orders (list)
-        _items = []
-        if self.orders:
-            for _item_orders in self.orders:
-                if _item_orders:
-                    _items.append(_item_orders.to_dict())
-            _dict['orders'] = _items
-        # override the default output from pydantic by calling `to_dict()` of each item in trades (list)
-        _items = []
-        if self.trades:
-            for _item_trades in self.trades:
-                if _item_trades:
-                    _items.append(_item_trades.to_dict())
-            _dict['trades'] = _items
-        # override the default output from pydantic by calling `to_dict()` of each item in positions (list)
-        _items = []
-        if self.positions:
-            for _item_positions in self.positions:
-                if _item_positions:
-                    _items.append(_item_positions.to_dict())
-            _dict['positions'] = _items
         return _dict
 
     @classmethod
@@ -121,15 +84,9 @@ class ExchangeAccount(BaseModel):
             return cls.model_validate(obj)
 
         _obj = cls.model_validate({
-            "exchange": obj.get("exchange"),
+            "account_type": obj.get("account_type"),
             "remote_account_id": obj.get("remote_account_id"),
-            "api_key": obj.get("api_key"),
-            "api_secret": obj.get("api_secret"),
-            "api_passphrase": obj.get("api_passphrase"),
-            "assets": [Asset.from_dict(_item) for _item in obj["assets"]] if obj.get("assets") is not None else None,
-            "orders": [Order.from_dict(_item) for _item in obj["orders"]] if obj.get("orders") is not None else None,
-            "trades": [Trade.from_dict(_item) for _item in obj["trades"]] if obj.get("trades") is not None else None,
-            "positions": [Position.from_dict(_item) for _item in obj["positions"]] if obj.get("positions") is not None else None
+            "exchange_config_ids": obj.get("exchange_config_ids")
         })
         return _obj
 

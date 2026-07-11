@@ -29,6 +29,7 @@ class ActionType(enum.Enum):
     WAIT = "wait"
     TRADE = "trade"
     CANCEL = "cancel"
+    BLOCKCHAIN_WALLET_INIT = "blockchain_wallet_init"
     WITHDRAW = "withdraw"
     DEPOSIT = "deposit"
     TRANSFER = "transfer"
@@ -71,6 +72,10 @@ class ActionsDAGParserParams(octobot_commons.dataclasses.MinimizableDataclass):
     EXCHANGE_FROM: typing.Optional[str] = None
     MIN_DELAY: typing.Optional[float] = None
     MAX_DELAY: typing.Optional[float] = None
+    BLOCKCHAIN_INIT_FILENAME: typing.Optional[str] = None
+    BLOCKCHAIN_INIT_PASSWORD: typing.Optional[str] = None
+    BLOCKCHAIN_INIT_PORT: typing.Optional[int] = None
+    BLOCKCHAIN_INIT_CLOSE_WALLET_ON_EXIT: typing.Optional[bool] = False
     BLOCKCHAIN_FROM: typing.Optional[str] = None
     BLOCKCHAIN_FROM_AMOUNT: typing.Optional[float] = None
     BLOCKCHAIN_FROM_ASSET: typing.Optional[str] = None
@@ -80,6 +85,9 @@ class ActionsDAGParserParams(octobot_commons.dataclasses.MinimizableDataclass):
     BLOCKCHAIN_FROM_SECRET_VIEW_KEY: typing.Optional[str] = None
     BLOCKCHAIN_FROM_SECRET_SPEND_KEY: typing.Optional[str] = None
     BLOCKCHAIN_FROM_PRIVATE_KEY: typing.Optional[str] = None
+    BLOCKCHAIN_FROM_FILENAME: typing.Optional[str] = None
+    BLOCKCHAIN_FROM_PASSWORD: typing.Optional[str] = None
+    BLOCKCHAIN_FROM_PORT: typing.Optional[int] = None
     BLOCKCHAIN_TO: typing.Optional[str] = None
     BLOCKCHAIN_TO_ASSET: typing.Optional[str] = None
     BLOCKCHAIN_TO_AMOUNT: typing.Optional[float] = None
@@ -138,7 +146,8 @@ class ActionsDAGParserParams(octobot_commons.dataclasses.MinimizableDataclass):
         return None
 
     def get_blockchain_and_wallet_descriptors_from_wallet_details(
-        self
+        self, 
+        descriptors_overrides: typing.Optional[dict[str, typing.Any]] = None
     ) -> dict[str, typing.Any]:
         if (
             not self.BLOCKCHAIN_FROM or
@@ -162,7 +171,9 @@ class ActionsDAGParserParams(octobot_commons.dataclasses.MinimizableDataclass):
                 f"BLOCKCHAIN_FROM_PRIVATE_KEY, BLOCKCHAIN_FROM_MNEMONIC_SEED, BLOCKCHAIN_FROM_SECRET_VIEW_KEY "
                 f"or BLOCKCHAIN_FROM_SECRET_SPEND_KEY must be provided for a blockchain from wallet"
             )
-        blockchain, blockchain_descriptor_specific_config, wallet_descriptor_specific_config = self.get_blockchain_and_specific_configs(self.BLOCKCHAIN_FROM)
+        blockchain, blockchain_descriptor_specific_config, wallet_descriptor_specific_config = self.get_blockchain_and_specific_configs(
+            self.BLOCKCHAIN_FROM, descriptors_overrides
+        )
         return {
             "blockchain_descriptor": blockchain_wallets.BlockchainDescriptor(
                 blockchain=blockchain,
@@ -238,9 +249,16 @@ class ActionsDAGParserParams(octobot_commons.dataclasses.MinimizableDataclass):
         )
 
     def get_blockchain_and_specific_configs(
-        self, blockchain: str
+        self,
+        blockchain: str,
+        descriptors_overrides: typing.Optional[dict[str, typing.Any]] = None
     ) -> tuple[str, dict, dict]:
-        blockchain_wallet_class = blockchain_wallets.get_blockchain_wallet_class_by_blockchain()[blockchain.lower()]
+        try:
+            blockchain_wallet_class = blockchain_wallets.get_blockchain_wallet_class_by_blockchain()[blockchain.lower()]
+        except KeyError as err:
+            raise octobot_flow.errors.InvalidAutomationActionError(
+                f"Invalid blockchain: {blockchain}"
+            ) from err
         simulator_config = {
             blockchain_wallets_simulator.BlockchainWalletSimulatorConfigurationKeys.ASSETS.value: {
                 self.BLOCKCHAIN_FROM_ASSET: self.BLOCKCHAIN_FROM_AMOUNT,
@@ -248,6 +266,8 @@ class ActionsDAGParserParams(octobot_commons.dataclasses.MinimizableDataclass):
         }
         specific_config = self._create_generic_blockchain_wallet_specific_config(blockchain)
         all_config = {**simulator_config, **specific_config}
+        if descriptors_overrides:
+            all_config.update(descriptors_overrides)
         return (
             blockchain_wallet_class.BLOCKCHAIN, 
             blockchain_wallet_class.create_blockchain_descriptor_specific_config(**all_config), 
@@ -366,11 +386,20 @@ class ActionsDAGParser:
 
     def _parse_generic_actions(self, actions_dag: octobot_flow.entities.ActionsDAG) -> None:
         latest_action = actions_dag.get_executable_actions()[0]
-        for index, action in enumerate(self.params.ACTIONS):
-            new_action = self._create_generic_action(action, index + 1)
+        previous_action_needs_if_error_wallet_cleanup = False
+        for index, action_name in enumerate(self.params.ACTIONS):
+            new_action = self._create_generic_action(action_name, index + 1)
+            if previous_action_needs_if_error_wallet_cleanup and isinstance(
+                new_action, octobot_flow.entities.DSLScriptActionDetails
+            ):
+                self._wrap_dsl_script_with_wallet_cleanup_if_error(new_action)
             new_action.add_dependency(latest_action.id)
             actions_dag.add_action(new_action)
             latest_action = new_action
+            previous_action_needs_if_error_wallet_cleanup = (
+                action_name == ActionType.BLOCKCHAIN_WALLET_INIT.value
+                and self.params.BLOCKCHAIN_INIT_CLOSE_WALLET_ON_EXIT is not True
+            )
 
     def _create_generic_action(
         self, action: str, index: int
@@ -386,6 +415,8 @@ class ActionsDAGParser:
                 return self._create_deposit_action(index)
             case ActionType.TRANSFER.value:
                 return self._create_transfer_action(index)
+            case ActionType.BLOCKCHAIN_WALLET_INIT.value:
+                return self._create_blockchain_wallet_init_action(index)
             case ActionType.LOOP_UNTIL_BLOCKCHAIN_BALANCE.value:
                 return self._create_loop_until_blockchain_balance_action(index)
             case ActionType.LOOP_UNTIL_ORDER_CLOSED.value:
@@ -493,6 +524,80 @@ class ActionsDAGParser:
             f"action_deposit_{index}",
             trading_view_signals_trading.TradingViewSignalsTradingMode.TRANSFER_FUNDS_SIGNAL,
             dataclasses.asdict(deposit_details),
+        )
+
+    def _wallet_init_details_for_translate(
+        self,
+        *,
+        close_wallet_override: typing.Optional[bool] = None,
+    ) -> dict:
+        self._ensure_params(
+            ["BLOCKCHAIN_FROM_ASSET", "BLOCKCHAIN_FROM"],
+            "blockchain_wallet_init",
+        )
+        resolved_close = (
+            self.params.BLOCKCHAIN_INIT_CLOSE_WALLET_ON_EXIT
+            if close_wallet_override is None
+            else close_wallet_override
+        )
+        descriptors_overrides = {
+            "filename": self.params.BLOCKCHAIN_INIT_FILENAME,
+            "password": self.params.BLOCKCHAIN_INIT_PASSWORD,
+            "port": self.params.BLOCKCHAIN_INIT_PORT,
+            "close_wallet_on_exit": resolved_close,
+        }
+        return dataclasses.asdict(
+            actions_params.BlockchainWalletInitParams(
+                **self.params.get_blockchain_and_wallet_descriptors_from_wallet_details(
+                    descriptors_overrides
+                )
+            )
+        )
+
+    def _translate_blockchain_wallet_init_signal(self, details: dict) -> str:
+        parsed_signal = {
+            trading_view_signals_trading.TradingViewSignalsTradingMode.SIGNAL_KEY:
+                trading_view_signals_trading.TradingViewSignalsTradingMode.BLOCKCHAIN_WALLET_INIT_SIGNAL,
+            **details,
+        }
+        dsl_script = tradingview_signal_to_dsl_translator.TradingViewSignalToDSLTranslator.translate_signal(
+            parsed_signal
+        )
+        if dsl_script == tradingview_signal_to_dsl_translator.UNKNOWN_SIGNAL_RESULT:
+            raise octobot_flow.errors.InvalidAutomationActionError(
+                f"Invalid signal: {trading_view_signals_trading.TradingViewSignalsTradingMode.BLOCKCHAIN_WALLET_INIT_SIGNAL}"
+                f"({details})"
+            )
+        return dsl_script
+
+    def _build_blockchain_wallet_init_dsl(self, *, force_close_wallet_on_exit: bool) -> str:
+        # force_close_wallet_on_exit: recovery path uses True so the wallet is closed on error.
+        details = self._wallet_init_details_for_translate(
+            close_wallet_override=True if force_close_wallet_on_exit else None,
+        )
+        return self._translate_blockchain_wallet_init_signal(details)
+
+    def _wrap_dsl_script_with_wallet_cleanup_if_error(
+        self,
+        dsl_action: octobot_flow.entities.DSLScriptActionDetails,
+    ) -> None:
+        # Step: wrap the primary DSL so a failing step runs a matching init with close_wallet_on_exit=True.
+        primary_script = dsl_action.dsl_script
+        if not primary_script:
+            raise octobot_flow.errors.InvalidAutomationActionError(
+                "Cannot wrap empty dsl_script with if_error wallet cleanup"
+            )
+        recovery_script = self._build_blockchain_wallet_init_dsl(force_close_wallet_on_exit=True)
+        dsl_action.dsl_script = (
+            f"if_error(value=({primary_script}), on_error={json.dumps(recovery_script)})"
+        )
+
+    def _create_blockchain_wallet_init_action(self, index: int) -> octobot_flow.entities.AbstractActionDetails:
+        blockchain_wallet_init_details = self._wallet_init_details_for_translate()
+        return self.create_dsl_script_from_tv_format_action_details(
+            f"action_blockchain_wallet_init_{index}",
+            trading_view_signals_trading.TradingViewSignalsTradingMode.BLOCKCHAIN_WALLET_INIT_SIGNAL,
+            blockchain_wallet_init_details,
         )
     
     def _create_transfer_action(

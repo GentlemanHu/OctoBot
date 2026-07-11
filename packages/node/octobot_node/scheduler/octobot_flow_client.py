@@ -16,10 +16,12 @@
 import typing
 import dataclasses
 import json
-import logging
 
 import octobot_commons.dataclasses
+import octobot_commons.logging
 
+import octobot_node.constants
+import octobot_node.errors as errors
 import octobot_node.scheduler.workflows_util as workflows_util
 
 try:
@@ -27,10 +29,14 @@ try:
     import octobot_flow.parsers
     import octobot_flow.entities
     import octobot_flow.jobs
+    import octobot_flow.errors
     # Requires octobot_flow import and importable tentacles folder
 
     # ensure environment is initialized
     octobot_flow.environment.initialize_environment(True)
+    octobot_flow.environment.register_executor_id(
+        octobot_node.constants.SCHEDULER_EXECUTOR_ID
+    )
 
 except ImportError:
     pass # OctoBot Flow is not available
@@ -112,11 +118,17 @@ class OctoBotActionsJob:
         result: OctoBotActionsJobResult,
         wallet_address: typing.Optional[str] = None,
     ):
-        parsed_description = OctoBotActionsJobDescription.parse_task_description(description)
-        self.description: OctoBotActionsJobDescription = OctoBotActionsJobDescription.from_dict(
-            parsed_description
-        )
+        try:
+            parsed_description = OctoBotActionsJobDescription.parse_task_description(description)
+            self.description: OctoBotActionsJobDescription = OctoBotActionsJobDescription.from_dict(
+                parsed_description
+            )
+        except octobot_flow.errors.ActionDependencyError as err:
+            raise errors.WorkflowDAGDependenciesError(err) from err
         if wallet_address is not None:
+            # auth_details["wallet_address"] carries the EVM address used by automation
+            # jobs to build the community sync client (CommunityRepository). It must be
+            # the EVM address, not the Starfish user_id.
             self.description.auth_details["wallet_address"] = wallet_address
         self.priority_user_actions: list[octobot_flow.entities.AbstractActionDetails] = [
             octobot_flow.entities.parse_action_details(
@@ -141,7 +153,7 @@ class OctoBotActionsJob:
                 self.priority_user_actions
                 or automation_job.automation_state.automation.actions_dag.get_executable_actions()
             )
-            logging.getLogger(self.__class__.__name__).info(f"Running automation actions: {selected_actions}")
+            octobot_commons.logging.get_logger(self.__class__.__name__).info(f"Running automation actions: {selected_actions}")
             executed_actions = await automation_job.run()
             self.after_execution_state = automation_job.automation_state
             post_execution_state_dump = automation_job.dump()
@@ -162,7 +174,7 @@ class OctoBotActionsJob:
         )
         has_next_actions = bool(automation.actions_dag.get_executable_actions())
         if not has_next_actions and (pending_actions := automation.actions_dag.get_pending_actions()):
-            raise ValueError(
+            raise errors.WorkflowDAGDependenciesError(
                 f"Automation {automation.metadata.automation_id}: actions DAG dependencies issue: "
                 f"no executable actions while there are still "
                 f"{len(pending_actions)} pending actions: {pending_actions}"

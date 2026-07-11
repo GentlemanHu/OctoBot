@@ -23,6 +23,8 @@ import octobot_commons.enums as common_enums
 import octobot_commons.errors as commons_errors
 import octobot_commons.str_util as str_util
 
+import octobot_evaluators.enums as evaluators_enums
+import octobot_evaluators.util.evaluator_result as evaluator_result
 import octobot_trading.modes.mode_dsl_factory as trading_mode_dsl_factory
 
 
@@ -104,6 +106,18 @@ class FakeTradingModeWithDslDeps(FakeTradingModeAlpha):
         return [dsl_interpreter.InterpreterDependency()]
 
 
+class FakeTradingModeWithConfiguredSymbols(FakeTradingModeAlpha):
+    @classmethod
+    def get_tentacle_config_traded_symbols(cls, trading_config, reference_market):
+        return ["BTC/USDT", "ETH/USDT"]
+
+
+class FakeTradingModeWithoutConfiguredSymbols(FakeTradingModeAlpha):
+    @classmethod
+    def get_tentacle_config_traded_symbols(cls, trading_config, reference_market):
+        return []
+
+
 def _trading_mode_mock(
     *,
     waiting_time=3600.0,
@@ -120,14 +134,74 @@ def _trading_mode_mock(
     return m
 
 
-def _operator_with_exchange_manager():
+_TEST_MATRIX_ID = "test-matrix-id"
+
+
+def _operator_with_exchange_manager(matrix_id=_TEST_MATRIX_ID):
     exchange_manager = mock.Mock()
+    exchange_manager.exchange_name = "binance"
     op_cls = trading_mode_dsl_factory.create_trading_mode_operator(
         FakeTradingModeBeta,
         exchange_manager,
         {"profile": True},
+        matrix_id,
     )
     return op_cls(), exchange_manager
+
+
+class TestGetTradingModeSymbols:
+    def test_returns_configured_symbols_when_available(self):
+        operator, exchange_manager = _operator_with_exchange_manager()
+        symbols = operator._get_trading_mode_symbols(
+            FakeTradingModeWithConfiguredSymbols,
+            {},
+            exchange_manager,
+        )
+        assert symbols == ["BTC/USDT", "ETH/USDT"]
+
+    def test_falls_back_to_dynamic_dependency_symbols(self):
+        operator, exchange_manager = _operator_with_exchange_manager()
+        symbols = operator._get_trading_mode_symbols(
+            FakeTradingModeWithoutConfiguredSymbols,
+            {
+                dsl_interpreter.DynamicDependenciesOperatorMixin.DYNAMIC_DEPENDENCIES_KEY: [
+                    {
+                        "operator_name": "strategy_evaluator_a",
+                        "result": {
+                            "eval_note": 1,
+                            "symbol": "BTC/USDC",
+                            "time_frame": "1h",
+                            "evaluator_name": "StrategyA",
+                            "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+                            "cryptocurrency": "BTC",
+                        },
+                    },
+                    {
+                        "operator_name": "strategy_evaluator_b",
+                        "result": {
+                            "eval_note": -1,
+                            "symbol": "ETH/USDC",
+                            "time_frame": "1h",
+                            "evaluator_name": "StrategyB",
+                            "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+                            "cryptocurrency": "ETH",
+                        },
+                    },
+                ],
+            },
+            exchange_manager,
+        )
+        assert symbols == ["BTC/USDC", "ETH/USDC"]
+
+    def test_returns_empty_when_no_configured_or_dynamic_dependency_symbols(self):
+        operator, exchange_manager = _operator_with_exchange_manager()
+        exchange_manager.exchange_config.traded_symbol_pairs = ["ADA/USDT"]
+        symbols = operator._get_trading_mode_symbols(
+            FakeTradingModeWithoutConfiguredSymbols,
+            {},
+            exchange_manager,
+        )
+        assert symbols == []
 
 
 class TestCreateOperatorParametersFromUserInputs:
@@ -202,9 +276,9 @@ class TestGetTradingModeMetaParameters:
             {},
         )
         meta = OpCls.get_trading_mode_meta_parameters()
-        assert len(meta) == 1
-        p = meta[0]
-        assert p.name == trading_mode_dsl_factory.ENABLE_INITIAL_PORTFOLIO_OPTIMIZATION
+        assert len(meta) == 2
+        meta_by_name = {parameter.name: parameter for parameter in meta}
+        p = meta_by_name[trading_mode_dsl_factory.ENABLE_INITIAL_PORTFOLIO_OPTIMIZATION]
         assert p.type is bool
         assert p.default is True
         assert p.required is False
@@ -248,6 +322,8 @@ class TestGetParameters:
             "Top_Level_Int",
             "Top_Float",
             trading_mode_dsl_factory.ENABLE_INITIAL_PORTFOLIO_OPTIMIZATION,
+            trading_mode_dsl_factory.DAG_RESET_TO_ACTION_ID,
+            dsl_interpreter.DynamicDependenciesOperatorMixin.DYNAMIC_DEPENDENCIES_KEY,
         }
         assert sum(
             1 for p in first if p.name == dsl_interpreter.ReCallableOperatorMixin.LAST_EXECUTION_RESULT_KEY
@@ -379,6 +455,114 @@ class TestGetDependencies:
                     gdd.assert_called_once_with({"param": 1}, {"global": True}, None)
         assert deps == [base_dep, local_dep]
 
+    def test_includes_symbol_dependencies_from_dynamic_dependencies(self):
+        OpCls = trading_mode_dsl_factory.create_trading_mode_operator(
+            FakeTradingModeWithDslDeps,
+            None,
+            {},
+        )
+        operator = OpCls()
+        with mock.patch(
+            "octobot_commons.dsl_interpreter.operator.Operator.get_dependencies",
+            mock.Mock(return_value=[]),
+        ):
+            with mock.patch.object(
+                operator,
+                "get_computed_value_by_parameter",
+                mock.Mock(
+                    return_value={
+                        dsl_interpreter.DynamicDependenciesOperatorMixin.DYNAMIC_DEPENDENCIES_KEY: [
+                            {
+                                "operator_name": "strategy_evaluator_a",
+                                "result": {
+                                    "eval_note": 1,
+                                    "symbol": "BTC/USDC",
+                                    "time_frame": "1h",
+                                    "evaluator_name": "StrategyA",
+                                    "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+                                    "cryptocurrency": "BTC",
+                                },
+                            },
+                            {
+                                "operator_name": "strategy_evaluator_b",
+                                "result": {
+                                    "eval_note": -1,
+                                    "symbol": "ETH/USDC",
+                                    "time_frame": "1h",
+                                    "evaluator_name": "StrategyB",
+                                    "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+                                    "cryptocurrency": "ETH",
+                                },
+                            },
+                        ],
+                    }
+                ),
+            ):
+                with mock.patch.object(
+                    FakeTradingModeWithDslDeps,
+                    "get_dsl_dependencies",
+                    mock.Mock(return_value=[]),
+                ):
+                    dependencies = operator.get_dependencies()
+        assert dependencies == [
+            trading_mode_dsl_factory.trading_dsl.SymbolDependency(symbol="BTC/USDC"),
+            trading_mode_dsl_factory.trading_dsl.SymbolDependency(symbol="ETH/USDC"),
+        ]
+
+    def test_deduplicates_symbol_dependencies_from_dynamic_dependencies(self):
+        existing_symbol_dependency = trading_mode_dsl_factory.trading_dsl.SymbolDependency(
+            symbol="BTC/USDC"
+        )
+        OpCls = trading_mode_dsl_factory.create_trading_mode_operator(
+            FakeTradingModeWithDslDeps,
+            None,
+            {},
+        )
+        operator = OpCls()
+        with mock.patch(
+            "octobot_commons.dsl_interpreter.operator.Operator.get_dependencies",
+            mock.Mock(return_value=[]),
+        ):
+            with mock.patch.object(
+                operator,
+                "get_computed_value_by_parameter",
+                mock.Mock(
+                    return_value={
+                        dsl_interpreter.DynamicDependenciesOperatorMixin.DYNAMIC_DEPENDENCIES_KEY: [
+                            {
+                                "operator_name": "strategy_evaluator_a",
+                                "result": {
+                                    "eval_note": 1,
+                                    "symbol": "BTC/USDC",
+                                    "time_frame": "1h",
+                                    "evaluator_name": "StrategyA",
+                                    "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+                                    "cryptocurrency": "BTC",
+                                },
+                            },
+                            {
+                                "operator_name": "strategy_evaluator_b",
+                                "result": {
+                                    "eval_note": -1,
+                                    "symbol": "BTC/USDC",
+                                    "time_frame": "1h",
+                                    "evaluator_name": "StrategyB",
+                                    "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+                                    "cryptocurrency": "BTC",
+                                },
+                            },
+                        ],
+                    }
+                ),
+            ):
+                with mock.patch.object(
+                    FakeTradingModeWithDslDeps,
+                    "get_dsl_dependencies",
+                    mock.Mock(return_value=[existing_symbol_dependency]),
+                ):
+                    dependencies = operator.get_dependencies()
+        assert dependencies == [existing_symbol_dependency]
+
 
 class TestCreateAllTradingModeOperators:
     def test_builds_one_operator_per_trading_mode_class(self):
@@ -389,6 +573,7 @@ class TestCreateAllTradingModeOperators:
             ops = trading_mode_dsl_factory.create_all_trading_mode_operators(
                 mock.sentinel.em,
                 {"c": 2},
+                _TEST_MATRIX_ID,
             )
         assert len(ops) == 2
         names = {cls.get_name() for cls in ops}
@@ -402,6 +587,7 @@ class TestCreateAllTradingModeOperators:
             inst = op_cls()
             assert inst.get_exchange_manager() is mock.sentinel.em
             assert inst.get_config() == {"c": 2}
+            assert inst.get_matrix_id() == _TEST_MATRIX_ID
 
 
 class TestPreCompute:
@@ -410,6 +596,7 @@ class TestPreCompute:
             FakeTradingModeBeta,
             None,
             {},
+            _TEST_MATRIX_ID,
         )
         op = OpCls()
         with mock.patch.object(
@@ -420,6 +607,79 @@ class TestPreCompute:
             with pytest.raises(commons_errors.DSLInterpreterError) as excinfo:
                 await op.pre_compute()
         assert "Exchange manager is required" in str(excinfo.value)
+
+    async def test_raises_when_matrix_id_is_none(self):
+        OpCls = trading_mode_dsl_factory.create_trading_mode_operator(
+            FakeTradingModeBeta,
+            mock.Mock(),
+            {},
+            None,
+        )
+        op = OpCls()
+        with mock.patch.object(
+            dsl_interpreter.PreComputingCallOperator,
+            "pre_compute",
+            new_callable=mock.AsyncMock,
+        ):
+            with pytest.raises(commons_errors.DSLInterpreterError) as excinfo:
+                await op.pre_compute()
+        assert "Matrix id is required" in str(excinfo.value)
+
+    async def test_seeds_matrix_from_dynamic_dependencies_before_execution(self):
+        op, exchange_manager = _operator_with_exchange_manager()
+        tm = _trading_mode_mock()
+        tm.symbol = "BTC/USDT"
+        strategy_result = {
+            "eval_note": 1.0,
+            "symbol": "BTC/USDT",
+            "time_frame": "1h",
+            "evaluator_name": "SimpleStrategyEvaluator",
+            "evaluator_type": evaluators_enums.EvaluatorMatrixTypes.STRATEGIES.value,
+            "cryptocurrency": "BTC",
+        }
+        with mock.patch.object(
+            dsl_interpreter.PreComputingCallOperator,
+            "pre_compute",
+            mock.AsyncMock(),
+        ):
+            with mock.patch.object(
+                op,
+                "get_computed_value_by_parameter",
+                return_value={},
+            ):
+                with mock.patch.object(
+                    op,
+                    "get_last_execution_result",
+                    return_value={"prior": True},
+                ):
+                    with mock.patch.object(
+                        op,
+                        "get_dynamic_dependencies",
+                        return_value=[mock.Mock(result=strategy_result)],
+                    ):
+                        with mock.patch(
+                            "octobot_trading.modes.mode_dsl_factory.evaluator_api.seed_matrix_from_evaluator_result",
+                        ) as seed_mock:
+                            with mock.patch.object(
+                                op,
+                                "_create_trading_modes",
+                                mock.AsyncMock(return_value=[tm]),
+                            ):
+                                await op.pre_compute()
+        seed_mock.assert_called_once_with(
+            _TEST_MATRIX_ID,
+            exchange_manager.exchange_name,
+            evaluator_result.EvaluatorResult.from_dict(strategy_result),
+        )
+        tm.manual_trigger.assert_awaited_once_with(
+            {
+                "trigger_source": common_enums.TriggerSource.MANUAL.value,
+                "kwargs": {
+                    "matrix_id": _TEST_MATRIX_ID,
+                    "cryptocurrency": "BTC",
+                },
+            },
+        )
 
     async def test_sets_value_and_invokes_manual_trigger_for_each_mode(self):
         op, em = _operator_with_exchange_manager()
@@ -459,10 +719,16 @@ class TestPreCompute:
             None,
         )
         tm_a.manual_trigger.assert_awaited_once_with(
-            {"trigger_source": common_enums.TriggerSource.MANUAL.value},
+            {
+                "trigger_source": common_enums.TriggerSource.MANUAL.value,
+                "kwargs": {"matrix_id": _TEST_MATRIX_ID},
+            },
         )
         tm_b.manual_trigger.assert_awaited_once_with(
-            {"trigger_source": common_enums.TriggerSource.MANUAL.value},
+            {
+                "trigger_source": common_enums.TriggerSource.MANUAL.value,
+                "kwargs": {"matrix_id": _TEST_MATRIX_ID},
+            },
         )
         assert op.value is not dsl_interpreter.UNINITIALIZED_VALUE
         inner = op.value[dsl_interpreter.ReCallingOperatorResult.__name__][

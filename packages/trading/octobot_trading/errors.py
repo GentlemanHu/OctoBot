@@ -269,6 +269,19 @@ class InvalidAPIKeyIPWhitelistError(AuthenticationError):
     """
 
 
+class InvalidAPIKeyPermissionsError(AuthenticationError):
+    """
+    Raised when an exchange failed to authenticate due to invalid API key permissions
+    """
+
+
+class ExchangeAccountSymbolPermissionError(AuthenticationError):
+    """
+    Raised when an exchange failed to execute the given request because of allowed traded symbols
+    on the current user account
+    """
+
+
 class ExchangeInternalSyncError(OctoBotExchangeError):
     """
     Raised when an exchange is returning an error due to its internal sync process
@@ -285,13 +298,6 @@ class ExchangeCompliancyError(OctoBotExchangeError):
 class ExchangeMaxOrdersForMarketReachedError(OctoBotExchangeError):
     """
     Raised when an exchange failed to execute the given request because the maximum number of orders for this market has been reached
-    """
-
-
-class ExchangeAccountSymbolPermissionError(OctoBotExchangeError):
-    """
-    Raised when an exchange failed to execute the given request because of allowed traded symbols
-    on the current user account
     """
 
 

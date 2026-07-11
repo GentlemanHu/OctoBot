@@ -50,6 +50,9 @@ DEFAULT_MAX_STOP_ORDERS_COUNT = 10
 INCLUDE_DUSTS_IN_SELL_ORDERS_WHEN_POSSIBLE = os_util.parse_boolean_environment_var(
     "INCLUDE_DUSTS_IN_SELL_ORDERS_WHEN_POSSIBLE", "true"
 )
+ENABLE_CHAINED_ORDER_UPDATE_WITH_TRIGGERING_ORDER_FEES = os_util.parse_boolean_environment_var(
+    "ENABLE_CHAINED_ORDER_UPDATE_WITH_TRIGGERING_ORDER_FEES", "True"
+)
 
 # Portfolio
 MAX_PORTFOLIO_SYNC_ATTEMPTS = 1
@@ -122,6 +125,8 @@ MAX_ALLOWED_CONSECUTIVE_CREDENTIALS_ERROR_MINUTES = float(os.getenv(
 TICKER_CACHE_TTL = int(os.getenv("TICKER_CACHE_TTL", "300"))
 OHLCV_CACHE_TTL = int(os.getenv("OHLCV_CACHE_TTL", "60"))
 
+ALLOW_EMPTY_TICKERS = os_util.parse_boolean_environment_var("ALLOW_EMPTY_TICKERS", "False")
+
 # Storage
 ENABLE_LIVE_CANDLES_STORAGE = os_util.parse_boolean_environment_var("ENABLE_LIVE_CANDLES_STORAGE", "False")
 ENABLE_HISTORICAL_ORDERS_UPDATES_STORAGE = os_util.parse_boolean_environment_var("ENABLE_HISTORICAL_ORDERS_UPDATES_STORAGE", "False")
@@ -162,7 +167,7 @@ DEFAULT_FUTURE_EXCHANGES = ["binanceusdm", "bybit"]
 TESTED_EXCHANGES = [
     "binance",
     "kucoin",
-    "okx",
+    "kraken",
 ] + sorted([
     "binanceus",
     "coinbase",
@@ -170,6 +175,7 @@ TESTED_EXCHANGES = [
     "htx",
     "hyperliquid",
     "bitget",
+    "okx",
     "gateio",
     "ascendex",
     "bybit",
@@ -182,10 +188,19 @@ TESTED_EXCHANGES = [
     "lbank",
 ])
 DEFAULT_FUTURE_EXCHANGES = sorted(["bybit"])
-SIMULATOR_TESTED_EXCHANGES = sorted(["bitfinex", "bithumb", "bitstamp", "bitmex",
-                              "hitbtc", "kraken", "poloniex", "bitso", "ndax", "upbit",
-                              "myokx", "okxus",
-                              "wavesexchange",])
+SIMULATOR_TESTED_EXCHANGES = sorted([
+    "bitfinex",
+    "bithumb",
+    "bitstamp",
+    "bitmex",
+    "hitbtc",
+    "poloniex",
+    "bitso",
+    "ndax",
+    "upbit",
+    "myokx",
+    "okxus",
+])
 
 
 # exchanges
@@ -252,6 +267,7 @@ MAX_TRADES_COUNT = int(os.getenv("MAX_TRADES_COUNT", "10000"))    # larger value
 # History
 DEFAULT_SAVED_HISTORICAL_TIMEFRAMES = [commons_enums.TimeFrames.ONE_DAY]
 HISTORICAL_CANDLES_FETCH_DEFAULT_TIMEOUT = 30
+DEFAULT_CANDLES_HISTORY_SIZE = int(os.getenv("DEFAULT_CANDLES_HISTORY_SIZE", "200"))
 MIN_CANDLES_HISTORY_SIZE = 2  # ensure that at least 2 candles are fetch to avoid issues were candles are not yet
 # available on exchange ending up in empty candles fetch
 

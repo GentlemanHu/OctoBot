@@ -422,7 +422,7 @@ class AbstractTradingModeProducer(modes_channel.ModeChannelProducer):
 
     async def manual_trigger(
         self, matrix_id: str, cryptocurrency: str,
-        symbol: str, time_frame, trigger_source: str
+        symbol: str, time_frame, trigger_source: str,
     ) -> None:
         """
         Called when a manual trigger is received. Behaves like set_final_eval by default.
@@ -432,12 +432,12 @@ class AbstractTradingModeProducer(modes_channel.ModeChannelProducer):
             cryptocurrency=cryptocurrency,
             symbol=symbol,
             time_frame=time_frame,
-            trigger_source=trigger_source
+            trigger_source=trigger_source,
         )
 
     async def set_final_eval(
         self, matrix_id: str, cryptocurrency: str, symbol: str,
-        time_frame, trigger_source: str
+        time_frame, trigger_source: str,
     ) -> None:
         """
         Called to calculate the final note or state => when any notification appears

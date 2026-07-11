@@ -164,7 +164,7 @@ class IndexTradingModeProducer(trading_modes.AbstractTradingModeProducer):
 
     async def manual_trigger(
         self, matrix_id: str, cryptocurrency: str,
-        symbol: str, time_frame, trigger_source: str
+        symbol: str, time_frame, trigger_source: str,
     ) -> None:
         await self._check_index_if_necessary()
 

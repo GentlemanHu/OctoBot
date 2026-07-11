@@ -37,6 +37,8 @@ class TestAutomationState(unittest.TestCase):
             return AutomationState(
                 id = '',
                 status = 'pending',
+                error = '',
+                error_message = '',
                 metadata = octobot_protocol.models.automation_metadata.AutomationMetadata(
                     name = '', 
                     description = '', 
@@ -71,12 +73,14 @@ class TestAutomationState(unittest.TestCase):
                     ''
                     ],
                 assets = [
-                    octobot_protocol.models.asset.Asset(
-                        symbol = '', 
-                        total = 1.337, 
-                        available = 1.337, 
-                        value = 1.337, 
-                        unit = '', )
+                    octobot_protocol.models.detailed_assets_for_trading_type.DetailedAssetsForTradingType(
+                        trading_type = 'spot', 
+                        assets = [
+                            octobot_protocol.models.detailed_asset.DetailedAsset(
+                                symbol = '', 
+                                total = 1.337, 
+                                available = 1.337, )
+                            ], )
                     ],
                 orders = [
                     octobot_protocol.models.order_summary.OrderSummary(

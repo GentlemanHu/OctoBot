@@ -131,9 +131,14 @@ class AbstractAdapter:
         return self.parse_mark_price(fixed, **kwargs)
 
     @_adapter
-    def adapt_market_status(self, raw, remove_price_limits=False, **kwargs) -> dict:
-        fixed = self.fix_market_status(raw, remove_price_limits=remove_price_limits, **kwargs)
-        return self.parse_market_status(fixed, remove_price_limits=remove_price_limits, **kwargs)
+    def adapt_market_status(self, raw, **kwargs) -> dict:
+        fixed = self.fix_market_status(raw, **kwargs)
+        return self.parse_market_status(fixed, **kwargs)
+
+    @_adapter
+    def adapt_dex_pairs(self, raw, **kwargs) -> list[dict]:
+        fixed = self.fix_dex_pairs(raw, **kwargs)
+        return self.parse_dex_pairs(fixed, **kwargs)
 
     @_adapter
     def adapt_transaction(self, raw, **kwargs) -> dict:
@@ -265,12 +270,19 @@ class AbstractAdapter:
     def parse_mark_price(self, fixed, **kwargs) -> dict:
         raise NotImplementedError("parse_mark_price is not implemented")
 
-    def fix_market_status(self, raw, remove_price_limits=False, **kwargs) -> dict:
+    def fix_market_status(self, raw, **kwargs) -> dict:
         # add generic logic if necessary
         return raw
 
-    def parse_market_status(self, fixed, remove_price_limits=False, **kwargs) -> dict:
+    def parse_market_status(self, fixed, **kwargs) -> dict:
         raise NotImplementedError("parse_market_status is not implemented")
+
+    def fix_dex_pairs(self, raw, **kwargs) -> list[dict]:
+        # add generic logic if necessary
+        return raw
+
+    def parse_dex_pairs(self, fixed, **kwargs) -> list[dict]:
+        raise NotImplementedError("parse_dex_pairs is not implemented")
 
     def fix_transaction(self, raw, **kwargs) -> dict:
         # add generic logic if necessary

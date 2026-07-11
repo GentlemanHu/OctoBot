@@ -24,6 +24,7 @@ import octobot_trading.enums as enums
 import octobot_trading.constants as constants
 import octobot_trading.errors
 import octobot_trading.personal_data as personal_data
+import octobot_trading.exchanges.util.exchange_data as exchange_data_import
 import octobot_trading.personal_data.orders.order_util as order_util
 import octobot_trading.personal_data.orders.order_factory as order_factory
 
@@ -988,7 +989,7 @@ def test_ensure_orders_limit():
     symbol = "BTC/USDT"
     exchange_manager = mock.Mock(
         exchange = mock.Mock(
-            get_max_orders_count = mock.Mock(return_value=5),
+            get_max_open_orders_count = mock.Mock(return_value=5),
         ),
         exchange_personal_data = mock.Mock(
             orders_manager = mock.Mock(
@@ -1007,11 +1008,11 @@ def test_ensure_orders_limit():
 
     # do not raise
     order_util.ensure_orders_limit(exchange_manager, symbol, [])
-    assert exchange_manager.exchange.get_max_orders_count.call_count == 2
-    assert exchange_manager.exchange.get_max_orders_count.mock_calls[0].args == (
+    assert exchange_manager.exchange.get_max_open_orders_count.call_count == 2
+    assert exchange_manager.exchange.get_max_open_orders_count.mock_calls[0].args == (
         symbol, enums.TraderOrderType.SELL_LIMIT
     )
-    assert exchange_manager.exchange.get_max_orders_count.mock_calls[1].args == (
+    assert exchange_manager.exchange.get_max_open_orders_count.mock_calls[1].args == (
         symbol, enums.TraderOrderType.STOP_LOSS
     )
     exchange_manager.exchange_personal_data.orders_manager.get_open_orders.assert_called_once_with(
@@ -1035,3 +1036,137 @@ def test_ensure_orders_limit():
         order_util.ensure_orders_limit(exchange_manager, symbol, [enums.TraderOrderType.STOP_LOSS]*3)
     with pytest.raises(octobot_trading.errors.MaxOpenOrderReachedForSymbolError):
         order_util.ensure_orders_limit(exchange_manager, symbol, [enums.TraderOrderType.STOP_LOSS_LIMIT]*10)
+
+
+class TestCreateAndRegisterChainedOrderOnBaseOrder:
+    pytestmark = pytest.mark.asyncio
+
+    _PRICE = decimal.Decimal("100")
+    _ORDER_TYPE = enums.TraderOrderType.SELL_LIMIT
+    _SIDE = enums.TradeOrderSide.SELL
+    _DISABLED_FEES_LOG_MESSAGE = (
+        "Chained order update with triggering order fees is disabled, "
+        "update_with_triggering_order_fees will be set to False."
+    )
+
+    @staticmethod
+    def _mock_base_order_for_chained_order_registration():
+        base_order = mock.Mock()
+        exchange_manager = mock.Mock()
+        exchange_manager.is_future = False
+        trader = mock.Mock()
+        trader.bundle_chained_order_with_uncreated_order = mock.AsyncMock(return_value={})
+        trader.chain_order = mock.AsyncMock()
+        exchange_manager.trader = trader
+        base_order.exchange_manager = exchange_manager
+        base_order.symbol = "BTC/USDT"
+        base_order.origin_quantity = decimal.Decimal("1")
+        base_order.order_id = "base_order_id"
+        return base_order, trader
+
+    async def _run_create_and_register_chained_order_on_base_order(
+        self,
+        *,
+        constant_enabled: bool,
+        update_with_triggering_order_fees: bool,
+        allow_bundling: bool = True,
+    ):
+        base_order, trader = self._mock_base_order_for_chained_order_registration()
+        chained_order = mock.Mock()
+        logger_mock = mock.Mock()
+
+        with mock.patch.object(order_factory, "create_order_instance", mock.Mock(return_value=chained_order)), \
+             mock.patch.object(
+                 order_util.constants,
+                 "ENABLE_CHAINED_ORDER_UPDATE_WITH_TRIGGERING_ORDER_FEES",
+                 constant_enabled,
+             ), \
+             mock.patch.object(order_util.logging, "get_logger", mock.Mock(return_value=logger_mock)):
+            params, returned_chained_order = await order_util.create_and_register_chained_order_on_base_order(
+                base_order,
+                self._PRICE,
+                self._ORDER_TYPE,
+                self._SIDE,
+                allow_bundling=allow_bundling,
+                update_with_triggering_order_fees=update_with_triggering_order_fees,
+            )
+
+        return base_order, trader, chained_order, logger_mock, params, returned_chained_order
+
+    @pytest.mark.parametrize(
+        "constant_enabled, update_with_triggering_order_fees, allow_bundling, "
+        "expected_passed_update_with_triggering_order_fees, expect_disabled_fees_log",
+        [
+            pytest.param(False, True, True, False, True, id="disables_fees_when_constant_disabled"),
+            pytest.param(True, True, True, True, False, id="keeps_fees_when_constant_enabled"),
+            pytest.param(False, False, True, False, False, id="no_log_when_fees_already_false"),
+            pytest.param(False, True, False, False, True, id="disables_fees_on_chain_order_when_constant_disabled"),
+        ],
+    )
+    async def test_update_with_triggering_order_fees_constant_gate(
+        self,
+        constant_enabled,
+        update_with_triggering_order_fees,
+        allow_bundling,
+        expected_passed_update_with_triggering_order_fees,
+        expect_disabled_fees_log,
+    ):
+        base_order, trader, chained_order, logger_mock, params, returned_chained_order = (
+            await self._run_create_and_register_chained_order_on_base_order(
+                constant_enabled=constant_enabled,
+                update_with_triggering_order_fees=update_with_triggering_order_fees,
+                allow_bundling=allow_bundling,
+            )
+        )
+
+        assert params == {}
+        assert returned_chained_order is chained_order
+
+        if allow_bundling:
+            trader.bundle_chained_order_with_uncreated_order.assert_awaited_once_with(
+                base_order, chained_order, expected_passed_update_with_triggering_order_fees
+            )
+            trader.chain_order.assert_not_called()
+        else:
+            trader.chain_order.assert_awaited_once_with(
+                base_order, chained_order, expected_passed_update_with_triggering_order_fees, False
+            )
+            trader.bundle_chained_order_with_uncreated_order.assert_not_called()
+
+        if expect_disabled_fees_log:
+            logger_mock.info.assert_called_once_with(self._DISABLED_FEES_LOG_MESSAGE)
+        else:
+            logger_mock.info.assert_not_called()
+
+
+class TestGetSymbolsFromOrders:
+    @staticmethod
+    def _order(symbol: str) -> dict:
+        return {
+            constants.STORAGE_ORIGIN_VALUE: {
+                enums.ExchangeConstantsOrderColumns.SYMBOL.value: symbol,
+            },
+        }
+
+    def test_returns_empty_when_no_orders(self):
+        orders = exchange_data_import.OrdersDetails()
+        assert order_util.get_symbols_from_orders(orders) == []
+
+    def test_collects_symbols_from_open_orders(self):
+        orders = exchange_data_import.OrdersDetails(
+            open_orders=[self._order("BTC/USDC"), self._order("ETH/USDC")],
+        )
+        assert order_util.get_symbols_from_orders(orders) == [
+            "BTC/USDC",
+            "ETH/USDC",
+        ]
+
+    def test_collects_symbols_from_open_and_missing_orders_deduplicated(self):
+        orders = exchange_data_import.OrdersDetails(
+            open_orders=[self._order("BTC/USDC")],
+            missing_orders=[self._order("BTC/USDC"), self._order("ETH/USDC")],
+        )
+        assert order_util.get_symbols_from_orders(orders) == [
+            "BTC/USDC",
+            "ETH/USDC",
+        ]

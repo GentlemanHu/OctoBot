@@ -58,7 +58,8 @@ class Execution(BaseModel):
     scheduled_at: typing.Optional[datetime.datetime] = None
     completed_at: typing.Optional[datetime.datetime] = None
     error: typing.Optional[str] = None
-    wallet_address: typing.Optional[str] = None
+    error_message: typing.Optional[str] = None
+    user_id: typing.Optional[str] = None
 
 
 class Task(BaseModel):
@@ -70,8 +71,9 @@ class Task(BaseModel):
     type: typing.Optional[str] = None
     executions: list[Execution] = []
     error: typing.Optional[str] = None
+    error_message: typing.Optional[str] = None
     user_ecdsa_public_key: typing.Optional[str] = None
-    wallet_address: typing.Optional[str] = None
+    user_id: typing.Optional[str] = None
 
 class Node(BaseModel):
     node_type: str
